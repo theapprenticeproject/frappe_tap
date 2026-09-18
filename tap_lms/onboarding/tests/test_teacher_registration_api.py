@@ -20,6 +20,7 @@ ROLE = "Teacher"
 LANGUAGE = "English"
 SCHOOL_ID = "Test-SC00001"
 SCHOOL_NAME = "Test"
+STATE_NAME = ""
 TIMEOUT = 5
 CALL_DELAY_SECONDS = 5
 MAX_RETRIES = 3
@@ -73,6 +74,8 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
             missing.append("PHONE_NUMBER")
         if not (SCHOOL_ID.strip() or SCHOOL_NAME.strip()):
             missing.append("SCHOOL_ID or SCHOOL_NAME")
+        if not STATE_NAME.strip():
+            missing.append("STATE_NAME")
         if missing:
             raise unittest.SkipTest(
                 f"Set these test configuration values first: {', '.join(missing)}"
@@ -163,7 +166,7 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
             return cls.school_option
         response, data = cls._request_with_retry(
             "list_school_details",
-            {"api_key": API_KEY},
+            {"api_key": API_KEY, "state_name": STATE_NAME},
         )
         if response.status_code != 200 or not isinstance(data, dict):
             raise AssertionError(f"Unable to resolve school. body={response.text}")
@@ -198,13 +201,17 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
     def test_01_list_school_details(self):
         response, data = self._request_with_retry(
             "list_school_details",
-            {"api_key": API_KEY},
+            {"api_key": API_KEY, "state_name": STATE_NAME},
         )
 
         self.assertEqual(response.status_code, 200, data)
         self.assertIsInstance(data, dict)
         self.assertIn("schools", data)
         self.assertIsInstance(data["schools"], list)
+        self.assertTrue(
+            all(school.get("state", "").upper() == STATE_NAME.upper() for school in data["schools"]),
+            "list_school_details returned a school from another state",
+        )
         if SCHOOL_ID:
             matching_school = next(
                 (school for school in data["schools"] if school.get("school_id") == SCHOOL_ID),

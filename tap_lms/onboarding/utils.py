@@ -230,12 +230,14 @@ def _get_school_row_by_id(school_id):
     return rows[0] if rows else None
 
 
-def _get_all_school_rows():
+def _get_all_school_rows(state_name):
     return frappe.db.sql(
         f"""
         {_SCHOOL_ROW_SELECT}
+        WHERE UPPER(TRIM(COALESCE(st.state_name, s.state, ''))) = UPPER(%s)
         ORDER BY s.name1 ASC
         """,
+        (state_name,),
         as_dict=True,
     )
 

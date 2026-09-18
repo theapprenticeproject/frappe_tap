@@ -102,7 +102,7 @@ def _run_teacher_write_with_retry(operation, data, write_fn):
 
 
 @frappe.whitelist(allow_guest=True)
-def list_school_details():
+def list_school_details(state_name=None):
     data = _get_request_data()
     try:
         api_key = data.get("api_key")
@@ -110,7 +110,15 @@ def list_school_details():
         if not _validate_api_key_or_respond(api_key):
             return
 
-        schools = _get_all_school_rows()
+        state_name = str(state_name or data.get("state_name") or "").strip()
+        if not state_name:
+            _respond(400, {
+                "status": "failure",
+                "message": "state_name is required",
+            })
+            return
+
+        schools = _get_all_school_rows(state_name)
         _respond(200, {"schools": schools})
     except frappe.ValidationError:
         frappe.db.rollback()
