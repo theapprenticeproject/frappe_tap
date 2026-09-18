@@ -21,12 +21,14 @@ LANGUAGE = "English"
 SCHOOL_ID = "Test-SC00001"
 SCHOOL_NAME = "Test"
 STATE_NAME = ""
+DISTRICT_NAME = ""
 TIMEOUT = 5
 CALL_DELAY_SECONDS = 5
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 1
 
 METHOD_URLS = {
+    "list_state_districts": "tap_lms.onboarding.teacher_registration.list_state_districts",
     "list_school_details": "tap_lms.onboarding.teacher_registration.list_school_details",
     "check_teacher_exists": "tap_lms.onboarding.teacher_registration.check_teacher_exists",
     "create_teacher_web": "tap_lms.onboarding.teacher_registration.create_teacher_web",
@@ -76,6 +78,8 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
             missing.append("SCHOOL_ID or SCHOOL_NAME")
         if not STATE_NAME.strip():
             missing.append("STATE_NAME")
+        if not DISTRICT_NAME.strip():
+            missing.append("DISTRICT_NAME")
         if missing:
             raise unittest.SkipTest(
                 f"Set these test configuration values first: {', '.join(missing)}"
@@ -166,7 +170,11 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
             return cls.school_option
         response, data = cls._request_with_retry(
             "list_school_details",
-            {"api_key": API_KEY, "state_name": STATE_NAME},
+            {
+                "api_key": API_KEY,
+                "state_name": STATE_NAME,
+                "district_name": DISTRICT_NAME,
+            },
         )
         if response.status_code != 200 or not isinstance(data, dict):
             raise AssertionError(f"Unable to resolve school. body={response.text}")
@@ -198,10 +206,34 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
         cls.create_response_text = response.text
         return response, data
 
-    def test_01_list_school_details(self):
+    def test_01_list_state_districts(self):
+        response, data = self._request_with_retry(
+            "list_state_districts",
+            {"api_key": API_KEY},
+        )
+
+        self.assertEqual(response.status_code, 200, data)
+        self.assertIsInstance(data, dict)
+        self.assertIsInstance(data.get("states"), list)
+        self.assertIsInstance(data.get("districts"), list)
+        self.assertIn(STATE_NAME, data["states"])
+        self.assertTrue(
+            any(
+                location.get("state") == STATE_NAME
+                and location.get("district") == DISTRICT_NAME
+                for location in data["districts"]
+            ),
+            "Configured state and district were not returned",
+        )
+
+    def test_02_list_school_details(self):
         response, data = self._request_with_retry(
             "list_school_details",
-            {"api_key": API_KEY, "state_name": STATE_NAME},
+            {
+                "api_key": API_KEY,
+                "state_name": STATE_NAME,
+                "district_name": DISTRICT_NAME,
+            },
         )
 
         self.assertEqual(response.status_code, 200, data)
@@ -209,8 +241,11 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
         self.assertIn("schools", data)
         self.assertIsInstance(data["schools"], list)
         self.assertTrue(
-            all(school.get("state", "").upper() == STATE_NAME.upper() for school in data["schools"]),
-            "list_school_details returned a school from another state",
+            all(
+                {"school_id", "school_name", "city"}.issubset(school)
+                for school in data["schools"]
+            ),
+            "list_school_details returned an invalid school record",
         )
         if SCHOOL_ID:
             matching_school = next(
@@ -220,7 +255,7 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
             self.assertIsNotNone(matching_school, f"School {SCHOOL_ID} not found")
             self.__class__.school_city = matching_school.get("city")
 
-    def test_02_check_teacher_exists(self):
+    def test_03_check_teacher_exists(self):
         response, data = self._request_with_retry(
             "check_teacher_exists",
             {"phone": PHONE_NUMBER},
@@ -231,7 +266,7 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
         self.assertIn("exists", data)
         self.assertIsInstance(data["exists"], bool)
 
-    def test_03_create_teacher_web(self):
+    def test_04_create_teacher_web(self):
         response, data = self._create_teacher()
 
         self.assertIn(
@@ -247,7 +282,7 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
         else:
             self.assertEqual(data["message"], "A teacher with this phone number already exists")
 
-    def test_04_get_teacher_details(self):
+    def test_05_get_teacher_details(self):
         if self.create_status_code not in {200, 409, None}:
             self.skipTest(
                 f"Skipping because create_teacher_web failed unexpectedly: {self.create_response_text}"
@@ -269,7 +304,7 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
         self.assertEqual(data["role"], ROLE)
         self.assertEqual(data["language"], LANGUAGE)
 
-    def test_05_update_teacher_details(self):
+    def test_06_update_teacher_details(self):
         if self.create_status_code not in {200, 409, None}:
             self.skipTest(
                 f"Skipping because create_teacher_web failed unexpectedly: {self.create_response_text}"
@@ -291,7 +326,7 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
         self.assertEqual(data.get("status"), "success", data)
         self.assertEqual(data.get("message"), "Teacher details updated successfully.")
 
-    def test_06_teacher_whatsapp_response(self):
+    def test_07_teacher_whatsapp_response(self):
         if self.create_status_code not in {200, 409, None}:
             self.skipTest(
                 f"Skipping because create_teacher_web failed unexpectedly: {self.create_response_text}"

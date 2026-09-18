@@ -32,6 +32,7 @@ def _load_teacher_registration_module():
     onboarding_utils_stub = types.ModuleType("tap_lms.onboarding.utils")
     for name in (
         "_get_all_school_rows",
+        "_get_all_state_district_rows",
         "_enqueue_glific_contact_sync",
         "_ensure_teacher_enrollment",
         "_get_language_id_to_name",
@@ -55,10 +56,14 @@ def _load_teacher_registration_module():
     api_failures_stub = types.ModuleType("tap_lms.utils.api_failures")
     api_failures_stub.log_api_failure = MagicMock()
 
+    glific_timeout_stub = types.ModuleType("tap_lms.utils.glific_timeout")
+    glific_timeout_stub.log_glific_timeout = _frappe_whitelist
+
     stubs = {
         "frappe": frappe_stub,
         "tap_lms.onboarding.utils": onboarding_utils_stub,
         "tap_lms.utils.api_failures": api_failures_stub,
+        "tap_lms.utils.glific_timeout": glific_timeout_stub,
     }
     for name, module in stubs.items():
         original_modules[name] = sys.modules.get(name)
@@ -81,6 +86,73 @@ teacher_registration = _load_teacher_registration_module()
 
 
 class TestTeacherRegistrationRetry(unittest.TestCase):
+    def test_list_state_districts_returns_sorted_location_directory(self):
+        locations = [
+            {"state": "UTTAR PRADESH", "district": "Agra"},
+            {"state": "DELHI", "district": "East"},
+            {"state": "DELHI", "district": "West"},
+        ]
+
+        with patch.object(
+            teacher_registration,
+            "_get_request_data",
+            return_value={"api_key": "test-key"},
+        ), patch.object(
+            teacher_registration,
+            "_validate_api_key_or_respond",
+            return_value=True,
+        ), patch.object(
+            teacher_registration,
+            "_get_all_state_district_rows",
+            return_value=locations,
+        ), patch.object(
+            teacher_registration,
+            "_respond",
+        ) as respond:
+            teacher_registration.list_state_districts()
+
+        respond.assert_called_once_with(
+            200,
+            {
+                "states": ["DELHI", "UTTAR PRADESH"],
+                "districts": locations,
+            },
+        )
+
+    def test_list_school_details_filters_by_state_and_district(self):
+        schools = [
+            {
+                "school_id": "SC00001",
+                "school_name": "Test School",
+                "city": "Test City",
+            },
+        ]
+
+        with patch.object(
+            teacher_registration,
+            "_get_request_data",
+            return_value={
+                "api_key": "test-key",
+                "state_name": "DELHI",
+                "district_name": "East",
+            },
+        ), patch.object(
+            teacher_registration,
+            "_validate_api_key_or_respond",
+            return_value=True,
+        ), patch.object(
+            teacher_registration,
+            "_get_all_school_rows",
+            return_value=schools,
+        ) as get_schools, patch.object(
+            teacher_registration,
+            "_respond",
+        ) as respond:
+            teacher_registration.list_school_details()
+
+        get_schools.assert_called_once_with("DELHI", "East")
+        respond.assert_called_once_with(200, {"schools": schools})
+
     def test_create_teacher_web_retries_transient_db_conflict(self):
         error = Exception("could not serialize access due to concurrent update")
         teacher_registration.frappe.db.rollback.reset_mock()

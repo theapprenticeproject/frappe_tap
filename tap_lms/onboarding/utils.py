@@ -230,14 +230,39 @@ def _get_school_row_by_id(school_id):
     return rows[0] if rows else None
 
 
-def _get_all_school_rows(state_name):
+def _get_all_state_district_rows():
     return frappe.db.sql(
-        f"""
-        {_SCHOOL_ROW_SELECT}
+        """
+        SELECT DISTINCT
+            TRIM(COALESCE(st.state_name, s.state, '')) AS state,
+            TRIM(COALESCE(d.district_name, s.district, '')) AS district
+        FROM `tabSchool` s
+        LEFT JOIN `tabState` st ON st.name = s.state
+        LEFT JOIN `tabDistrict` d ON d.name = s.district
+        WHERE TRIM(COALESCE(st.state_name, s.state, '')) != ''
+          AND TRIM(COALESCE(d.district_name, s.district, '')) != ''
+        ORDER BY state ASC, district ASC
+        """,
+        as_dict=True,
+    )
+
+
+def _get_all_school_rows(state_name, district_name):
+    return frappe.db.sql(
+        """
+        SELECT
+            s.name AS school_id,
+            s.name1 AS school_name,
+            COALESCE(c.city_name, s.city, '') AS city
+        FROM `tabSchool` s
+        LEFT JOIN `tabState` st ON st.name = s.state
+        LEFT JOIN `tabDistrict` d ON d.name = s.district
+        LEFT JOIN `tabCity` c ON c.name = s.city
         WHERE UPPER(TRIM(COALESCE(st.state_name, s.state, ''))) = UPPER(%s)
+          AND UPPER(TRIM(COALESCE(d.district_name, s.district, ''))) = UPPER(%s)
         ORDER BY s.name1 ASC
         """,
-        (state_name,),
+        (state_name, district_name),
         as_dict=True,
     )
 

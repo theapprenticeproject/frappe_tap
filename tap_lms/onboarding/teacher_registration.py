@@ -4,6 +4,7 @@ import time
 import frappe
 from tap_lms.onboarding.utils import (
     _get_all_school_rows,
+    _get_all_state_district_rows,
     _enqueue_glific_contact_sync,
     _ensure_teacher_enrollment,
     _get_language_id_to_name,
@@ -102,7 +103,28 @@ def _run_teacher_write_with_retry(operation, data, write_fn):
 
 
 @frappe.whitelist(allow_guest=True)
-def list_school_details(state_name=None):
+def list_state_districts():
+    data = _get_request_data()
+    try:
+        if not _validate_api_key_or_respond(data.get("api_key")):
+            return
+
+        locations = _get_all_state_district_rows()
+        states = sorted({location["state"] for location in locations})
+        _respond(200, {"states": states, "districts": locations})
+    except frappe.ValidationError:
+        frappe.db.rollback()
+        log_api_failure("list_state_districts", data, frappe.get_traceback())
+        raise
+    except Exception as exc:
+        frappe.db.rollback()
+        log_api_failure("list_state_districts", data, frappe.get_traceback())
+        frappe.log_error(frappe.get_traceback(), "list_state_districts failed")
+        _respond(500, {"status": "failure", "message": str(exc)})
+
+
+@frappe.whitelist(allow_guest=True)
+def list_school_details(state_name=None, district_name=None):
     data = _get_request_data()
     try:
         api_key = data.get("api_key")
@@ -111,14 +133,15 @@ def list_school_details(state_name=None):
             return
 
         state_name = str(state_name or data.get("state_name") or "").strip()
-        if not state_name:
+        district_name = str(district_name or data.get("district_name") or "").strip()
+        if not state_name or not district_name:
             _respond(400, {
                 "status": "failure",
-                "message": "state_name is required",
+                "message": "state_name and district_name are required",
             })
             return
 
-        schools = _get_all_school_rows(state_name)
+        schools = _get_all_school_rows(state_name, district_name)
         _respond(200, {"schools": schools})
     except frappe.ValidationError:
         frappe.db.rollback()
