@@ -2,6 +2,7 @@ import importlib.util
 import sys
 import types
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -28,6 +29,11 @@ def _load_teacher_registration_module():
     frappe_stub.log_error = MagicMock()
     frappe_stub.get_traceback = MagicMock(return_value="")
     frappe_stub.get_doc = MagicMock()
+    frappe_stub.utils = types.SimpleNamespace(
+        getdate=lambda value=None: (
+            date.fromisoformat(str(value)[:10]) if value else date.today()
+        )
+    )
 
     onboarding_utils_stub = types.ModuleType("tap_lms.onboarding.utils")
     for name in (
@@ -86,6 +92,123 @@ teacher_registration = _load_teacher_registration_module()
 
 
 class TestTeacherRegistrationRetry(unittest.TestCase):
+    def test_check_teacher_exists_returns_latest_current_year_batch(self):
+        current_year = date.today().year
+        teacher = {
+            "enrollment": [
+                types.SimpleNamespace(
+                    batch="OLD-BATCH",
+                    date_joining=f"{current_year - 1}-12-31",
+                    idx=3,
+                ),
+                types.SimpleNamespace(
+                    batch="CURRENT-BATCH-1",
+                    date_joining=f"{current_year}-01-15",
+                    idx=1,
+                ),
+                types.SimpleNamespace(
+                    batch="CURRENT-BATCH-2",
+                    date_joining=f"{current_year}-08-20",
+                    idx=2,
+                ),
+            ]
+        }
+
+        with patch.object(
+            teacher_registration,
+            "_get_request_data",
+            return_value={"phone": "919999999999"},
+        ), patch.object(
+            teacher_registration,
+            "_normalize_phone",
+            return_value="919999999999",
+        ), patch.object(
+            teacher_registration,
+            "_validate_phone",
+            return_value=True,
+        ), patch.object(
+            teacher_registration,
+            "_phone_filter",
+            return_value={"phone_number": ["in", ["919999999999", "9999999999"]]},
+        ), patch.object(
+            teacher_registration.frappe.db,
+            "exists",
+            return_value="TEACHER-1",
+        ), patch.object(
+            teacher_registration.frappe,
+            "get_doc",
+            return_value=teacher,
+        ), patch.object(
+            teacher_registration,
+            "_get_latest_enrollment",
+            return_value=teacher["enrollment"][2],
+        ) as get_latest, patch.object(
+            teacher_registration,
+            "_respond",
+        ) as respond:
+            teacher_registration.check_teacher_exists()
+
+        filtered_enrollments = get_latest.call_args.args[0]["enrollment"]
+        self.assertEqual(
+            [enrollment.batch for enrollment in filtered_enrollments],
+            ["CURRENT-BATCH-1", "CURRENT-BATCH-2"],
+        )
+        respond.assert_called_once_with(
+            200,
+            {"exists": True, "batch_number": "CURRENT-BATCH-2"},
+        )
+
+    def test_check_teacher_exists_returns_empty_batch_without_current_year_enrollment(self):
+        teacher = {
+            "enrollment": [
+                types.SimpleNamespace(
+                    batch="OLD-BATCH",
+                    date_joining=f"{date.today().year - 1}-12-31",
+                    idx=1,
+                ),
+            ]
+        }
+
+        with patch.object(
+            teacher_registration,
+            "_get_request_data",
+            return_value={"phone": "919999999999"},
+        ), patch.object(
+            teacher_registration,
+            "_normalize_phone",
+            return_value="919999999999",
+        ), patch.object(
+            teacher_registration,
+            "_validate_phone",
+            return_value=True,
+        ), patch.object(
+            teacher_registration,
+            "_phone_filter",
+            return_value={"phone_number": ["in", ["919999999999", "9999999999"]]},
+        ), patch.object(
+            teacher_registration.frappe.db,
+            "exists",
+            return_value="TEACHER-1",
+        ), patch.object(
+            teacher_registration.frappe,
+            "get_doc",
+            return_value=teacher,
+        ), patch.object(
+            teacher_registration,
+            "_get_latest_enrollment",
+            return_value=None,
+        ) as get_latest, patch.object(
+            teacher_registration,
+            "_respond",
+        ) as respond:
+            teacher_registration.check_teacher_exists()
+
+        self.assertEqual(get_latest.call_args.args[0]["enrollment"], [])
+        respond.assert_called_once_with(
+            200,
+            {"exists": True, "batch_number": ""},
+        )
+
     def test_list_state_districts_returns_sorted_location_directory(self):
         locations = [
             {"state": "UTTAR PRADESH", "district": "Agra"},

@@ -200,8 +200,29 @@ def check_teacher_exists():
             )
             return
 
-        exists = bool(frappe.db.exists("Teacher", _phone_filter("phone_number", phone)))
-        _respond(200, {"exists": exists})
+        teacher_name = frappe.db.exists(
+            "Teacher", _phone_filter("phone_number", phone)
+        )
+        batch_number = ""
+        if teacher_name:
+            teacher = frappe.get_doc("Teacher", teacher_name)
+            current_year = frappe.utils.getdate().year
+            current_year_enrollments = [
+                enrollment
+                for enrollment in teacher.get("enrollment") or []
+                if enrollment.date_joining
+                and frappe.utils.getdate(enrollment.date_joining).year == current_year
+            ]
+            latest_enrollment = _get_latest_enrollment(
+                {"enrollment": current_year_enrollments}
+            )
+            if latest_enrollment:
+                batch_number = latest_enrollment.batch or ""
+
+        _respond(
+            200,
+            {"exists": bool(teacher_name), "batch_id": batch_number},
+        )
     except frappe.ValidationError:
         frappe.db.rollback()
         log_api_failure("check_teacher_exists", data, frappe.get_traceback())
