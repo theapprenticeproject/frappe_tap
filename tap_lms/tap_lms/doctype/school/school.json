@@ -73,8 +73,9 @@
   },
   {
    "fieldname": "department",
-   "fieldtype": "Data",
-   "label": "Regional Department"
+   "fieldtype": "Select",
+   "label": "Department",
+   "options": "Basic Education Department\nMadhyamik Shiksha Parishad\nOther"
   },
   {
    "fieldname": "pin",

@@ -253,7 +253,8 @@ def _get_all_school_rows(state_name, district_name):
         SELECT
             s.name AS school_id,
             s.name1 AS school_name,
-            COALESCE(c.city_name, s.city, '') AS city
+            COALESCE(c.city_name, s.city, '') AS city,
+            COALESCE(NULLIF(TRIM(s.department), ''), 'Other') AS department
         FROM `tabSchool` s
         LEFT JOIN `tabState` st ON st.name = s.state
         LEFT JOIN `tabDistrict` d ON d.name = s.district

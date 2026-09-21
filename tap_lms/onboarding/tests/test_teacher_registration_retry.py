@@ -248,6 +248,7 @@ class TestTeacherRegistrationRetry(unittest.TestCase):
                 "school_id": "SC00001",
                 "school_name": "Test School",
                 "city": "Test City",
+                "department": "Basic Education Department",
             },
         ]
 

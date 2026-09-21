@@ -242,10 +242,14 @@ class TestTeacherRegistrationAPI(unittest.TestCase):
         self.assertIsInstance(data["schools"], list)
         self.assertTrue(
             all(
-                {"school_id", "school_name", "city"}.issubset(school)
+                {"school_id", "school_name", "city", "department"}.issubset(school)
                 for school in data["schools"]
             ),
             "list_school_details returned an invalid school record",
+        )
+        self.assertTrue(
+            all(school["department"] for school in data["schools"]),
+            "list_school_details returned an empty department",
         )
         if SCHOOL_ID:
             matching_school = next(
