@@ -50,6 +50,13 @@ TRANSIENT_DB_CONFLICT_SNIPPETS = (
     "current transaction is aborted",
 )
 
+STATE_RESPONSE_PAYLOAD_MAP = {
+    "TELANGANA": {
+        "student_registration_url": "NULL",
+        "student_consent_url": "NULL",
+    },
+}
+
 
 def _iter_exception_chain(exc):
     seen = set()
@@ -454,17 +461,22 @@ def _teacher_whatsapp_response_once(phone_number):
     teacher.save(ignore_permissions=True)
     frappe.db.commit()
 
-    response_payload = {
-        "student_registration_url": (
-            f"http://registration.theapprenticeproject.org/student/"
-            f"{school_id}"
-        ),
-    }
-    if (school_row or {}).get("city") not in {"DoE Zone 27", "DoE Zone 28"}:
-        response_payload["student_consent_url"] = (
-            f"https://api.whatsapp.com/send?phone=918454812392&text=tapschool:"
-            f"{school_id}"
-        )
+    school_state = str((school_row or {}).get("state") or "").strip().upper()
+    response_payload = STATE_RESPONSE_PAYLOAD_MAP.get(school_state)
+    if response_payload:
+        response_payload = response_payload.copy()
+    else:
+        response_payload = {
+            "student_registration_url": (
+                f"http://registration.theapprenticeproject.org/student/"
+                f"{school_id}"
+            ),
+        }
+        if (school_row or {}).get("city") not in {"DoE Zone 27", "DoE Zone 28"}:
+            response_payload["student_consent_url"] = (
+                f"https://api.whatsapp.com/send?phone=918454812392&text=tapschool:"
+                f"{school_id}"
+            )
 
     _respond(200, response_payload)
     return
