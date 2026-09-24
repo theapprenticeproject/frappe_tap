@@ -20,6 +20,8 @@ class StudentSheetRegistrationJob(Document):
 
 RUNNING_STATUSES = {"Preparing", "Uploading"}
 CRON_LOG_DOCTYPE = "Student Sheet Registration Cron Log"
+PREPARE_JOB_TIMEOUT_SECONDS = 7200
+UPLOAD_JOB_TIMEOUT_SECONDS = 86400
 DAILY_STUDENT_SHEET_REGISTRATION_JOB_METHOD = (
     "tap_lms.tap_lms.doctype.student_sheet_registration_job."
     "student_sheet_registration_job.run_daily_student_sheet_registration_job"
@@ -146,6 +148,15 @@ def _glific_contact_file_url(summary: dict) -> str:
     return "\n".join(urls)
 
 
+def _glific_contact_upload_error(summary: dict) -> str:
+    if str(summary.get("glific_contact_upload_status") or "").strip().lower() != "failed":
+        return ""
+    return str(
+        summary.get("glific_contact_upload_error")
+        or "Glific contact update failed"
+    ).strip()
+
+
 def _complete_cron_log(logname: str, status: str, summary: dict, last_error: str = "") -> None:
     if not logname:
         return
@@ -250,7 +261,7 @@ def enqueue_daily_student_sheet_registration() -> dict:
         job = frappe.enqueue(
             DAILY_STUDENT_SHEET_REGISTRATION_JOB_METHOD,
             queue="long",
-            timeout=7200,
+            timeout=UPLOAD_JOB_TIMEOUT_SECONDS,
             job_name=f"student_sheet_registration_daily_{docname}",
             docname=docname,
             cron_log_name=cron_log,
@@ -305,7 +316,7 @@ def start_prepare_student_sheet_registration_job(docname: str) -> dict:
         "tap_lms.tap_lms.doctype.student_sheet_registration_job."
         "student_sheet_registration_job.run_prepare_student_sheet_registration_job",
         queue="long",
-        timeout=7200,
+        timeout=PREPARE_JOB_TIMEOUT_SECONDS,
         job_name=f"student_sheet_registration_prepare_{docname}",
         docname=docname,
     )
@@ -339,7 +350,7 @@ def start_upload_student_sheet_registration_job(docname: str) -> dict:
         "tap_lms.tap_lms.doctype.student_sheet_registration_job."
         "student_sheet_registration_job.run_upload_student_sheet_registration_job",
         queue="long",
-        timeout=7200,
+        timeout=UPLOAD_JOB_TIMEOUT_SECONDS,
         job_name=f"student_sheet_registration_upload_{docname}",
         docname=docname,
     )
@@ -409,6 +420,18 @@ def run_upload_student_sheet_registration_job(docname: str) -> dict:
         )
         _set_summary_counts(docname, result)
         _set_glific_contact_files(docname, result.get("glific_contact_files") or [])
+        glific_upload_error = _glific_contact_upload_error(result)
+        if glific_upload_error:
+            _set_job_state(
+                docname,
+                status="Failed",
+                completed_at=frappe.utils.now_datetime(),
+                summary_json=json.dumps(result, indent=2, sort_keys=True),
+                last_error=glific_upload_error,
+            )
+            frappe.db.commit()
+            raise frappe.ValidationError(glific_upload_error)
+
         _set_job_state(
             docname,
             status="Completed",
@@ -485,6 +508,10 @@ def run_daily_student_sheet_registration_job(docname: str, cron_log_name: str | 
             final_summary = dict(prepare_summary)
             final_summary.setdefault("uploaded_rows", 0)
             final_summary.setdefault("glific_contact_files", [])
+            final_summary.setdefault("glific_contact_file_url", "")
+            final_summary.setdefault("glific_contact_upload_status", "skipped")
+            final_summary.setdefault("glific_contact_upload_error", "")
+            final_summary.setdefault("glific_contact_upload_results", [])
             final_summary.setdefault("not_done_rows_file_url", "")
             latest_summary = dict(final_summary)
             _set_summary_counts(docname, final_summary)
@@ -524,6 +551,24 @@ def run_daily_student_sheet_registration_job(docname: str, cron_log_name: str | 
         latest_summary = dict(final_summary)
         _set_summary_counts(docname, final_summary)
         _set_glific_contact_files(docname, upload_result.get("glific_contact_files") or [])
+        glific_upload_error = _glific_contact_upload_error(final_summary)
+        if glific_upload_error:
+            _set_job_state(
+                docname,
+                status="Failed",
+                completed_at=frappe.utils.now_datetime(),
+                summary_json=json.dumps(final_summary, indent=2, sort_keys=True),
+                last_error=glific_upload_error,
+            )
+            _complete_cron_log(
+                cron_log_name or "",
+                "Failed",
+                final_summary,
+                glific_upload_error,
+            )
+            frappe.db.commit()
+            raise frappe.ValidationError(glific_upload_error)
+
         _set_job_state(
             docname,
             status="Completed",

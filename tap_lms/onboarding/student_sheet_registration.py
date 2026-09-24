@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import csv
 import json
+import random
 import re
+import time as time_module
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from io import BytesIO, StringIO
@@ -19,10 +21,14 @@ from tap_lms.onboarding.backend_upload_utils import (
     FAILED_ROWS_GCP_PROJECT_ID,
     GCP_CREDENTIALS_PROJECT_ID,
     GLIFIC_CSV_HEADERS,
+    GLIFIC_CONTACTS_FOLDER,
     GOOGLE_SHEETS_READWRITE_SCOPES,
     get_google_service_account_credentials as _get_google_service_account_credentials,
     upload_bytes_to_gcs as _upload_bytes_to_gcs,
-    upload_glific_contact_csv as _upload_glific_contact_csv,
+)
+from tap_lms.onboarding.glific_contact_upload import (
+    get_glific_collection as _get_glific_collection,
+    move_contacts_and_wait as _move_contacts_and_wait,
 )
 from tap_lms.tap_lms.doctype.student.student import _reserve_next_student_name
 
@@ -68,12 +74,20 @@ PROCESS_STATUS_COLUMN = "process status"
 
 STATUS_DONE = "Done"
 STATUS_PREPARED = "Prepared"
-STATUS_NOT_AGREE = "Skipped: shall_we_begin does not contain Agree"
+STATUS_NOT_AGREE = "Skipped: shall_we_begin is not Agree ✅"
 DUPLICATE_DONE_MESSAGE = "Duplicate contact_phone_number already registered; student not imported"
 DUPLICATE_RUN_MESSAGE = "Duplicate contact_phone_number in current run; first valid row will be imported"
 PROCESS_STATUS_COMPLETE = "complete"
 PROCESS_STATUS_FAIL = "fail"
 GLIFIC_CONTACT_FIELD_SCHOOL_ID = "school_id"
+
+SHEETS_MAX_RETRIES = 5
+SHEETS_MAX_VALUE_RANGES_PER_REQUEST = 500
+SHEETS_MAX_REQUEST_BYTES = 1_800_000
+SHEETS_MAX_CELLS_PER_RANGE = 500
+
+GLIFIC_CONTACT_CSV_MAX_BYTES = 2 * 1024 * 1024
+STUDENT_SHEET_GLIFIC_HEADERS = [*GLIFIC_CSV_HEADERS, "collection"]
 
 PREPARED_HEADERS = [
     "Language",
@@ -93,11 +107,6 @@ PREPARED_HEADERS = [
     "Level",
     "Prepare Status",
     "Message",
-]
-NOT_DONE_ROWS_CSV_HEADERS = [
-    *PREPARED_HEADERS,
-    "Registration Status",
-    "Process Status",
 ]
 
 
@@ -137,7 +146,7 @@ def prepare_student_sheet_registration(log_fn=None, progress_fn=None) -> dict:
 
             raw_count += 1
             current_status = source_row.get("registration_status") or ""
-            if _status_is_done(current_status):
+            if _status_is_complete(current_status):
                 skipped_done += 1
                 status_updates.append(
                     _process_status_update_from_source(sheet, source_row, PROCESS_STATUS_COMPLETE)
@@ -165,20 +174,19 @@ def prepare_student_sheet_registration(log_fn=None, progress_fn=None) -> dict:
     if status_updates:
         _write_status_updates(session, status_updates)
 
+    ready_rows = [row for row in prepared_rows if row.get("prepare_status") == "Ready"]
     failed_rows = [row for row in prepared_rows if row.get("prepare_status") != "Ready"]
+    prepared_file_url = _create_and_upload_prepared_workbook(ready_rows)
     failed_rows_file_url = _create_and_upload_failed_rows_workbook(failed_rows) if failed_rows else ""
-    failure_csv_urls = _create_and_upload_failure_csvs(failed_rows)
 
     summary = {
         "raw_rows": raw_count,
         "skipped_done_rows": skipped_done,
-        "prepared_rows": len([row for row in prepared_rows if row.get("prepare_status") == "Ready"]),
+        "prepared_rows": len(ready_rows),
         "failed_rows": len(failed_rows),
         "duplicate_rows": len(_duplicate_phone_failure_rows(failed_rows)),
-        "prepared_file_url": "",
+        "prepared_file_url": prepared_file_url,
         "failed_rows_file_url": failed_rows_file_url,
-        "not_done_rows_file_url": failure_csv_urls["other_failures_file_url"],
-        **failure_csv_urls,
         "sheets": [
             {
                 "language": sheet.language,
@@ -205,9 +213,6 @@ def upload_prepared_student_sheet_registration(
 ) -> dict:
     import_user = (import_user or frappe.session.user or "Administrator").strip()
     session = _get_sheets_session()
-    current_sheets = _read_all_source_sheets(session, ensure_status_column=True)
-    current_rows_by_key = _index_current_rows(current_sheets)
-    done_phones = _collect_done_phones(current_sheets)
 
     ready_rows = [row for row in prepared_rows if row.get("prepare_status") == "Ready"]
     success_rows: list[dict] = []
@@ -224,32 +229,6 @@ def upload_prepared_student_sheet_registration(
             "total": len(ready_rows),
         })
 
-        current_row = current_rows_by_key.get(_source_row_key(row))
-        if current_row and current_row.get("process_status_range") and not row.get("process_status_range"):
-            row["process_status_range"] = current_row["process_status_range"]
-
-        current_status = (current_row or {}).get("registration_status") or ""
-        current_phone = _canonicalize_phone((current_row or {}).get("contact_phone_number"))
-
-        if not current_row:
-            failed_rows.append(_failed_copy(row, "Source row not found; re-run Prepare Data"))
-            status_updates.append(_status_update(row, "Source row not found; re-run Prepare Data"))
-            status_updates.append(_process_status_update(row, PROCESS_STATUS_FAIL))
-            continue
-        if current_phone != row.get("phone"):
-            message = "Source row changed after prepare; re-run Prepare Data"
-            failed_rows.append(_failed_copy(row, message))
-            status_updates.append(_status_update(row, message))
-            status_updates.append(_process_status_update(row, PROCESS_STATUS_FAIL))
-            continue
-        if _status_is_done(current_status):
-            status_updates.append(_process_status_update(row, PROCESS_STATUS_COMPLETE))
-            continue
-        if row["phone"] in done_phones:
-            failed_rows.append(_failed_copy(row, DUPLICATE_DONE_MESSAGE))
-            status_updates.append(_status_update(row, DUPLICATE_DONE_MESSAGE))
-            status_updates.append(_process_status_update(row, PROCESS_STATUS_COMPLETE))
-            continue
         if row["phone"] in uploaded_phones:
             failed_rows.append(_failed_copy(row, DUPLICATE_RUN_MESSAGE))
             status_updates.append(_status_update(row, DUPLICATE_RUN_MESSAGE))
@@ -266,7 +245,6 @@ def upload_prepared_student_sheet_registration(
             success_row["student_id"] = student.name
             success_rows.append(success_row)
             uploaded_phones.add(row["phone"])
-            done_phones.add(row["phone"])
             status_updates.append(_status_update(row, STATUS_DONE))
             status_updates.append(_process_status_update(row, PROCESS_STATUS_COMPLETE))
         except Exception as exc:
@@ -282,12 +260,26 @@ def upload_prepared_student_sheet_registration(
         _write_status_updates(session, status_updates)
 
     failed_rows_file_url = _create_and_upload_failed_rows_workbook(failed_rows) if failed_rows else ""
-    failure_csv_urls = _create_and_upload_failure_csvs(failed_rows)
-    glific_contact_files = _create_and_upload_glific_contact_csvs(success_rows)
-    glific_contact_file_url = (
-        glific_contact_files[0].get("file_path", "")
-        if glific_contact_files
-        else ""
+    glific_contact_file_result = _create_and_upload_glific_contact_csvs(
+        success_rows,
+        log_fn=log_fn,
+    )
+    if isinstance(glific_contact_file_result, tuple):
+        glific_contact_files, glific_contact_upload_results = glific_contact_file_result
+    else:
+        glific_contact_files = glific_contact_file_result
+        glific_contact_upload_results = []
+    glific_contact_file_url = "\n".join(
+        str(file_row.get("file_path") or "").strip()
+        for file_row in glific_contact_files
+        if str(file_row.get("file_path") or "").strip()
+    )
+    glific_contact_upload_status = _glific_contact_upload_status(
+        success_rows,
+        glific_contact_upload_results,
+    )
+    glific_contact_upload_error = _glific_contact_upload_error(
+        glific_contact_upload_results
     )
     summary = {
         "prepared_rows": len(ready_rows),
@@ -295,10 +287,11 @@ def upload_prepared_student_sheet_registration(
         "failed_rows": len(failed_rows),
         "duplicate_rows": len(_duplicate_phone_failure_rows(failed_rows)),
         "failed_rows_file_url": failed_rows_file_url,
-        "not_done_rows_file_url": failure_csv_urls["other_failures_file_url"],
-        **failure_csv_urls,
         "glific_contact_file_url": glific_contact_file_url,
         "glific_contact_files": glific_contact_files,
+        "glific_contact_upload_status": glific_contact_upload_status,
+        "glific_contact_upload_error": glific_contact_upload_error,
+        "glific_contact_upload_results": glific_contact_upload_results,
     }
     _emit(log_fn, f"[student-sheet-registration] uploaded summary={summary}")
     _emit_progress(progress_fn, {"event": "uploaded", "summary": dict(summary)})
@@ -622,9 +615,39 @@ def _sheets_get(session: AuthorizedSession, url: str, params: dict | None = None
 
 
 def _sheets_post(session: AuthorizedSession, url: str, body: dict) -> dict:
-    response = session.post(url, json=body, timeout=120)
-    _raise_for_sheets_response(response)
-    return response.json() if response.content else {}
+    for retry_number in range(SHEETS_MAX_RETRIES + 1):
+        response = session.post(url, json=body, timeout=120)
+        if response.ok:
+            return response.json() if response.content else {}
+        if not _is_retryable_sheets_response(response) or retry_number == SHEETS_MAX_RETRIES:
+            _raise_for_sheets_response(response)
+
+        delay = _sheets_retry_delay(response, retry_number)
+        frappe.logger("tap_lms.student_sheet_registration").warning(
+            "Google Sheets API returned %s; retrying in %.1f seconds (attempt %s/%s)",
+            response.status_code,
+            delay,
+            retry_number + 1,
+            SHEETS_MAX_RETRIES,
+        )
+        time_module.sleep(delay)
+
+    return {}
+
+
+def _is_retryable_sheets_response(response) -> bool:
+    return int(response.status_code) in {429, 500, 502, 503, 504}
+
+
+def _sheets_retry_delay(response, retry_number: int) -> float:
+    base_delay = 60.0 * (2 ** retry_number) + random.random()
+    retry_after = str((response.headers or {}).get("Retry-After") or "").strip()
+    try:
+        if retry_after:
+            return max(float(retry_after), base_delay)
+    except ValueError:
+        pass
+    return base_delay
 
 
 def _raise_for_sheets_response(response) -> None:
@@ -647,7 +670,8 @@ def _write_status_updates(session: AuthorizedSession, updates: list[dict]) -> No
         })
 
     for spreadsheet_id, data in updates_by_sheet.items():
-        for chunk in _chunks(data, 500):
+        compacted_data = _compact_value_ranges(data)
+        for chunk in _value_range_chunks(compacted_data):
             _sheets_post(
                 session,
                 f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values:batchUpdate",
@@ -656,6 +680,67 @@ def _write_status_updates(session: AuthorizedSession, updates: list[dict]) -> No
                     "data": chunk,
                 },
             )
+
+
+def _compact_value_ranges(data: list[dict]) -> list[dict]:
+    latest_by_range = {item["range"]: item["values"] for item in data}
+    grouped_cells: dict[tuple[str, str], dict[int, list]] = {}
+    unparsed_ranges: list[dict] = []
+
+    for range_name, values in latest_by_range.items():
+        match = re.match(r"^(?P<prefix>.+!)(?P<column>[A-Z]+)(?P<row>[1-9]\d*)$", range_name)
+        if not match:
+            unparsed_ranges.append({"range": range_name, "values": values})
+            continue
+        key = (match.group("prefix"), match.group("column"))
+        grouped_cells.setdefault(key, {})[int(match.group("row"))] = values[0]
+
+    compacted = list(unparsed_ranges)
+    for (prefix, column), row_values in grouped_cells.items():
+        rows = sorted(row_values)
+        start = 0
+        while start < len(rows):
+            end = start + 1
+            while (
+                end < len(rows)
+                and rows[end] == rows[end - 1] + 1
+                and end - start < SHEETS_MAX_CELLS_PER_RANGE
+            ):
+                end += 1
+
+            block_rows = rows[start:end]
+            first_row = block_rows[0]
+            last_row = block_rows[-1]
+            range_name = f"{prefix}{column}{first_row}"
+            if last_row != first_row:
+                range_name += f":{column}{last_row}"
+            compacted.append({
+                "range": range_name,
+                "values": [row_values[row] for row in block_rows],
+            })
+            start = end
+
+    return compacted
+
+
+def _value_range_chunks(data: list[dict]):
+    chunk = []
+    chunk_bytes = 0
+    for item in data:
+        item_bytes = len(
+            json.dumps(item, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        if chunk and (
+            len(chunk) >= SHEETS_MAX_VALUE_RANGES_PER_REQUEST
+            or chunk_bytes + item_bytes > SHEETS_MAX_REQUEST_BYTES
+        ):
+            yield chunk
+            chunk = []
+            chunk_bytes = 0
+        chunk.append(item)
+        chunk_bytes += item_bytes
+    if chunk:
+        yield chunk
 
 
 def _get_language_id(language_name: str) -> str:
@@ -976,24 +1061,12 @@ def _collect_done_phones(sheets: Iterable[SourceSheet]) -> set[str]:
     done_phones: set[str] = set()
     for sheet in sheets:
         for row in sheet.rows:
-            if not _status_is_done(row.get("registration_status")):
+            if not _status_is_complete(row.get("registration_status")):
                 continue
             phone = _canonicalize_phone(row.get("contact_phone_number"))
             if phone:
                 done_phones.add(phone)
     return done_phones
-
-
-def _index_current_rows(sheets: Iterable[SourceSheet]) -> dict[tuple[str, int, int], dict]:
-    index = {}
-    for sheet in sheets:
-        for row in sheet.rows:
-            index[(sheet.spreadsheet_id, sheet.sheet_id, row["row_number"])] = row
-    return index
-
-
-def _source_row_key(row: dict) -> tuple[str, int, int]:
-    return (row["spreadsheet_id"], int(row["sheet_id"]), int(row["row_number"]))
 
 
 def _prepared_error(base: dict, message: str, status: str = "Error") -> dict:
@@ -1009,8 +1082,6 @@ def _prepared_error(base: dict, message: str, status: str = "Error") -> dict:
     row.setdefault("level", _level_for_grade(row.get("grade")) if row.get("grade") else "")
     row["prepare_status"] = status
     row["message"] = message
-    row["final_registration_status"] = message
-    row["final_process_status"] = _process_status_for_row(row)
     return row
 
 
@@ -1018,8 +1089,6 @@ def _failed_copy(row: dict, message: str) -> dict:
     failed = dict(row)
     failed["prepare_status"] = "Error"
     failed["message"] = message
-    failed["final_registration_status"] = message
-    failed["final_process_status"] = _process_status_for_row(failed)
     return failed
 
 
@@ -1085,91 +1154,6 @@ def _duplicate_phone_failure_rows(rows: list[dict]) -> list[dict]:
     return [row for row in rows if _is_duplicate_phone_failure(row)]
 
 
-def _other_failure_rows(rows: list[dict]) -> list[dict]:
-    return [row for row in rows if not _is_duplicate_phone_failure(row)]
-
-
-def _create_and_upload_failure_csvs(rows: list[dict]) -> dict[str, str]:
-    duplicate_rows = _duplicate_phone_failure_rows(rows)
-    other_rows = _other_failure_rows(rows)
-    return {
-        "duplicate_phone_numbers_file_url": (
-            _create_and_upload_not_done_rows_csv(
-                duplicate_rows,
-                folder="not-done/duplicate-phone-numbers",
-                filename_prefix="student_sheet_registration_duplicate_phone_numbers",
-            )
-            if duplicate_rows
-            else ""
-        ),
-        "other_failures_file_url": (
-            _create_and_upload_not_done_rows_csv(
-                other_rows,
-                folder="not-done/other-failures",
-                filename_prefix="student_sheet_registration_other_failures",
-            )
-            if other_rows
-            else ""
-        ),
-    }
-
-
-def _create_and_upload_not_done_rows_csv(
-    rows: list[dict],
-    folder: str = "not-done",
-    filename_prefix: str = "student_sheet_registration_not_done",
-) -> str:
-    timestamp = frappe.utils.now_datetime().strftime("%Y%m%d_%H%M%S")
-    object_name = f"student-sheet-registration/{folder}/{filename_prefix}_{timestamp}.csv"
-    return _upload_bytes_to_gcs(
-        _render_not_done_rows_csv(rows),
-        object_name,
-        FAILED_ROWS_GCP_PROJECT_ID,
-        content_type="text/csv",
-    )
-
-
-def _render_not_done_rows_csv(rows: list[dict]) -> bytes:
-    buffer = StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=NOT_DONE_ROWS_CSV_HEADERS)
-    writer.writeheader()
-    writer.writerows(_not_done_csv_row(row) for row in rows)
-    return buffer.getvalue().encode("utf-8")
-
-
-def _not_done_csv_row(row: dict) -> dict[str, str]:
-    values = _workbook_row(row) + [
-        _not_done_registration_status(row),
-        _not_done_process_status(row),
-    ]
-    return {
-        header: str(value or "")
-        for header, value in zip(NOT_DONE_ROWS_CSV_HEADERS, values)
-    }
-
-
-def _not_done_registration_status(row: dict) -> str:
-    explicit_status = str(
-        row.get("final_registration_status")
-        or row.get("registration_status")
-        or ""
-    ).strip()
-    if explicit_status:
-        return explicit_status
-    return str(row.get("message") or row.get("prepare_status") or "").strip()
-
-
-def _not_done_process_status(row: dict) -> str:
-    explicit_status = str(
-        row.get("final_process_status")
-        or row.get("process_status")
-        or ""
-    ).strip()
-    if explicit_status:
-        return explicit_status
-    return _process_status_for_row(row)
-
-
 def _create_and_upload_rows_workbook(rows: list[dict], prefix: str, filename_prefix: str) -> str:
     wb = Workbook()
     ws = wb.active
@@ -1212,17 +1196,189 @@ def _workbook_row(row: dict) -> list[str]:
     ]
 
 
-def _create_and_upload_glific_contact_csvs(rows: list[dict]) -> list[dict]:
+def _create_and_upload_glific_contact_csvs(
+    rows: list[dict],
+    log_fn=None,
+) -> tuple[list[dict], list[dict]]:
+    if not rows:
+        return [], []
+
     timestamp = frappe.utils.now_datetime().strftime("%Y%m%d_%H%M%S")
-    contact_rows = [_glific_contact_row(row) for row in rows]
-    file_name = f"student_sheet_registration_contacts_{timestamp}.csv"
-    file_path = _upload_glific_contact_csv(file_name, contact_rows)
-    return [{
-        "tab_name": "All Uploaded Rows",
-        "file_name": file_name,
-        "file_path": file_path,
-        "row_count": len(contact_rows),
-    }]
+    contact_rows = (_glific_contact_row(row) for row in rows)
+    files: list[dict] = []
+    upload_results: list[dict] = []
+
+    for part_number, (chunk_rows, csv_text) in enumerate(
+        _glific_contact_csv_chunks(contact_rows),
+        start=1,
+    ):
+        file_name = (
+            f"student_sheet_registration_contacts_{timestamp}_part_{part_number:03d}.csv"
+        )
+        object_name = f"{GLIFIC_CONTACTS_FOLDER}/{file_name}"
+        csv_bytes = csv_text.encode("utf-8")
+        file_path = _upload_bytes_to_gcs(
+            csv_bytes,
+            object_name,
+            FAILED_ROWS_GCP_PROJECT_ID,
+            content_type="text/csv",
+        )
+        file_row = {
+            "tab_name": f"Uploaded Rows Part {part_number:03d}",
+            "file_name": file_name,
+            "file_path": file_path,
+            "row_count": len(chunk_rows),
+        }
+        files.append(file_row)
+        _emit(
+            log_fn,
+            "[student-sheet-registration] glific_contact_file_uploaded "
+            f"part={part_number} rows={len(chunk_rows)} bytes={len(csv_bytes)} "
+            f"url={file_path}",
+        )
+
+        references = _glific_contact_references(chunk_rows)
+        try:
+            upload_result = _move_contacts_and_wait(csv_text, references)
+        except Exception as exc:
+            error = f"Glific contact update failed for {file_path}: {_short_error(exc)}"
+            upload_results.append({
+                "file_name": file_name,
+                "file_path": file_path,
+                "row_count": len(chunk_rows),
+                "move_status": "failed",
+                "notification_status": "failed",
+                "user_job_id": None,
+                "error": error,
+            })
+            _emit(
+                log_fn,
+                "[student-sheet-registration] glific_contact_update_failed "
+                f"part={part_number} error={error}",
+            )
+            break
+
+        notification_status = str(
+            upload_result.get("notification_status") or ""
+        ).strip().lower()
+        result_row = {
+            "file_name": file_name,
+            "file_path": file_path,
+            "row_count": len(chunk_rows),
+            **upload_result,
+        }
+        if notification_status != "completed":
+            error = (
+                "Glific contact update did not complete for "
+                f"{file_path}: notification_status={notification_status or 'missing'}"
+            )
+            result_row["error"] = error
+            upload_results.append(result_row)
+            _emit(
+                log_fn,
+                "[student-sheet-registration] glific_contact_update_failed "
+                f"part={part_number} error={error}",
+            )
+            break
+
+        upload_results.append(result_row)
+        _emit(
+            log_fn,
+            "[student-sheet-registration] glific_contact_update_completed "
+            f"part={part_number} rows={len(chunk_rows)} "
+            f"user_job_id={upload_result.get('user_job_id') or ''}",
+        )
+
+    return files, upload_results
+
+
+def _glific_contact_upload_status(
+    success_rows: list[dict],
+    upload_results: list[dict],
+) -> str:
+    if not success_rows:
+        return "skipped"
+    if upload_results and all(
+        str(result.get("notification_status") or "").strip().lower() == "completed"
+        for result in upload_results
+    ):
+        return "completed"
+    return "failed"
+
+
+def _glific_contact_upload_error(upload_results: list[dict]) -> str:
+    for result in upload_results:
+        error = str(result.get("error") or "").strip()
+        if error:
+            return error
+    return ""
+
+
+def _glific_contact_csv_chunks(
+    contact_rows: Iterable[dict],
+):
+    header_text = _render_glific_csv_header()
+    header_size = len(header_text.encode("utf-8"))
+    chunk_rows: list[dict] = []
+    chunk_parts = [header_text]
+    chunk_size = header_size
+
+    for row in contact_rows:
+        row_text = _render_glific_csv_row(row)
+        row_size = len(row_text.encode("utf-8"))
+        if header_size + row_size > GLIFIC_CONTACT_CSV_MAX_BYTES:
+            raise frappe.ValidationError(
+                "A Glific contact CSV row exceeds the 2 MiB chunk limit: "
+                f"phone={row.get('phone') or ''}"
+            )
+
+        if chunk_rows and chunk_size + row_size > GLIFIC_CONTACT_CSV_MAX_BYTES:
+            yield chunk_rows, "".join(chunk_parts)
+            chunk_rows = []
+            chunk_parts = [header_text]
+            chunk_size = header_size
+
+        chunk_rows.append(row)
+        chunk_parts.append(row_text)
+        chunk_size += row_size
+
+    if chunk_rows:
+        yield chunk_rows, "".join(chunk_parts)
+
+
+def _render_glific_csv_header() -> str:
+    buffer = StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=STUDENT_SHEET_GLIFIC_HEADERS)
+    writer.writeheader()
+    return buffer.getvalue()
+
+
+def _render_glific_csv_row(row: dict) -> str:
+    buffer = StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=STUDENT_SHEET_GLIFIC_HEADERS)
+    writer.writerow({
+        header: str(row.get(header) or "")
+        for header in STUDENT_SHEET_GLIFIC_HEADERS
+    })
+    return buffer.getvalue()
+
+
+def _glific_contact_references(rows: list[dict]) -> dict[str, list[str]]:
+    phones = {
+        str(row.get("phone") or "").strip()
+        for row in rows
+        if str(row.get("phone") or "").strip()
+    }
+    collections = {
+        collection.strip()
+        for row in rows
+        for collection in str(row.get("collection") or "").split(",")
+        if collection.strip()
+    }
+    return {
+        "phones": sorted(phones),
+        "collections": sorted(collections),
+    }
 
 
 def _glific_contact_row(row: dict) -> dict:
@@ -1238,6 +1394,7 @@ def _glific_contact_row(row: dict) -> dict:
         frappe.db.get_value("Course Verticals", course_vertical, "name2")
         if course_vertical else ""
     )
+    collection = _get_glific_collection(batch_id, course)
     data = {
         "name": row.get("student_name") or "",
         "phone": row.get("phone") or "",
@@ -1252,8 +1409,12 @@ def _glific_contact_row(row: dict) -> dict:
         "level": row.get("level") or "",
         "course": course or "",
         "student_id": row.get("student_id") or "",
+        "collection": collection,
     }
-    return {header: str(data.get(header) or "") for header in GLIFIC_CSV_HEADERS}
+    return {
+        header: str(data.get(header) or "")
+        for header in STUDENT_SHEET_GLIFIC_HEADERS
+    }
 
 
 def _get_glific_model_name(school_id: str, batch: str, preferred_model_id: str = "") -> str:
@@ -1368,11 +1529,12 @@ def _clean_student_name(value: object) -> str:
 
 
 def _contains_agree(value: object) -> bool:
-    return "agree" in str(value or "").lower()
+    return str(value or "").strip() == "Agree ✅"
 
 
-def _status_is_done(value: object) -> bool:
-    return str(value or "").strip().lower() == STATUS_DONE.lower()
+def _status_is_complete(value: object) -> bool:
+    status = str(value or "").strip().lower()
+    return status in {STATUS_DONE.lower(), DUPLICATE_DONE_MESSAGE.lower()}
 
 
 def _row_is_blank(row: dict) -> bool:
@@ -1411,11 +1573,6 @@ def _column_letter(index: int) -> str:
         index, remainder = divmod(index - 1, 26)
         letters.append(chr(65 + remainder))
     return "".join(reversed(letters))
-
-
-def _chunks(values: list, size: int):
-    for start in range(0, len(values), size):
-        yield values[start:start + size]
 
 
 def _short_error(exc: Exception) -> str:

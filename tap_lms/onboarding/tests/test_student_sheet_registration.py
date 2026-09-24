@@ -1,10 +1,7 @@
-import csv
 import json
 import sys
 import types
 import unittest
-from datetime import datetime
-from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -423,6 +420,20 @@ class TestStudentSheetRegistrationGlificContactRow(unittest.TestCase):
 
 
 class TestStudentSheetRegistrationProcessStatus(unittest.TestCase):
+    def test_only_exact_agree_checkmark_is_accepted(self):
+        self.assertTrue(student_sheet_registration._contains_agree("Agree ✅"))
+        self.assertTrue(student_sheet_registration._contains_agree("  Agree ✅  "))
+        self.assertFalse(student_sheet_registration._contains_agree("Agree"))
+        self.assertFalse(student_sheet_registration._contains_agree("Disagree"))
+        self.assertFalse(student_sheet_registration._contains_agree("agree ✅"))
+
+    def test_done_and_registered_duplicate_statuses_are_complete(self):
+        self.assertTrue(student_sheet_registration._status_is_complete("Done"))
+        self.assertTrue(student_sheet_registration._status_is_complete(
+            student_sheet_registration.DUPLICATE_DONE_MESSAGE
+        ))
+        self.assertFalse(student_sheet_registration._status_is_complete("Prepared"))
+
     def test_duplicate_rows_are_complete_process_status(self):
         self.assertEqual(
             student_sheet_registration._process_status_for_row({"message": "Duplicate contact_phone_number"}),
@@ -436,88 +447,273 @@ class TestStudentSheetRegistrationProcessStatus(unittest.TestCase):
         )
 
 
-class TestStudentSheetRegistrationNotDoneCsv(unittest.TestCase):
-    def test_not_done_csv_includes_registration_and_process_status(self):
-        rendered = student_sheet_registration._render_not_done_rows_csv([{
-            "language": "Hindi",
-            "spreadsheet_title": "Registrations",
-            "sheet_title": "Hindi",
-            "row_number": 5,
-            "timestamp": "2026-08-20 10:00:00",
-            "student_name": "Student One",
-            "contact_phone_number": "9876543210",
-            "phone": "919876543210",
-            "gender": "Female",
-            "grade": "7",
-            "school_id": "SCH-001",
-            "batch": "BATCH-001",
-            "course_vertical": "CV-001",
-            "course_names": ["Course A"],
-            "level": "Level 2",
-            "prepare_status": "Error",
-            "message": "Invalid grade",
-        }])
-        rows = list(csv.DictReader(StringIO(rendered.decode("utf-8"))))
+class TestStudentSheetRegistrationSheetsWrites(unittest.TestCase):
+    def test_status_updates_compact_adjacent_cells_before_writing(self):
+        updates = [
+            {"spreadsheet_id": "sheet-1", "range": "'Students'!A2", "value": "old"},
+            {"spreadsheet_id": "sheet-1", "range": "'Students'!A3", "value": "three"},
+            {"spreadsheet_id": "sheet-1", "range": "'Students'!A5", "value": "five"},
+            {"spreadsheet_id": "sheet-1", "range": "'Students'!B2", "value": "complete"},
+            {"spreadsheet_id": "sheet-1", "range": "'Students'!B3", "value": "fail"},
+            {"spreadsheet_id": "sheet-1", "range": "'Students'!A2", "value": "latest"},
+        ]
 
-        self.assertEqual(rows[0]["Registration Status"], "Invalid grade")
-        self.assertEqual(rows[0]["Process Status"], "fail")
-        self.assertEqual(rows[0]["Canonical Phone"], "919876543210")
+        with patch.object(student_sheet_registration, "_sheets_post") as sheets_post:
+            student_sheet_registration._write_status_updates(MagicMock(), updates)
 
-    def test_not_done_csv_upload_uses_csv_content_type(self):
-        with patch.object(
-            student_sheet_registration.frappe.utils,
-            "now_datetime",
-            return_value=datetime(2026, 8, 21, 12, 30, 0),
-        ), patch.object(
-            student_sheet_registration,
-            "_upload_bytes_to_gcs",
-            return_value="https://example.com/not-done.csv",
-        ) as upload:
-            file_url = student_sheet_registration._create_and_upload_not_done_rows_csv([
-                {"message": "Invalid grade"}
-            ])
+        sheets_post.assert_called_once()
+        self.assertEqual(sheets_post.call_args.args[2]["data"], [
+            {
+                "range": "'Students'!A2:A3",
+                "values": [["latest"], ["three"]],
+            },
+            {"range": "'Students'!A5", "values": [["five"]]},
+            {
+                "range": "'Students'!B2:B3",
+                "values": [["complete"], ["fail"]],
+            },
+        ])
 
-        self.assertEqual(file_url, "https://example.com/not-done.csv")
-        self.assertEqual(
-            upload.call_args.args[1],
-            "student-sheet-registration/not-done/"
-            "student_sheet_registration_not_done_20260821_123000.csv",
+    def test_sheets_post_retries_429_using_retry_after(self):
+        rate_limited = SimpleNamespace(
+            ok=False,
+            status_code=429,
+            headers={"Retry-After": "7"},
+            content=b"",
         )
-        self.assertEqual(upload.call_args.kwargs["content_type"], "text/csv")
+        succeeded = SimpleNamespace(
+            ok=True,
+            status_code=200,
+            headers={},
+            content=b'{"updatedCells": 1}',
+            json=lambda: {"updatedCells": 1},
+        )
+        session = MagicMock()
+        session.post.side_effect = [rate_limited, succeeded]
 
-    def test_failure_csvs_split_duplicate_phone_numbers_from_other_failures(self):
         with patch.object(
-            student_sheet_registration.frappe.utils,
-            "now_datetime",
-            return_value=datetime(2026, 8, 21, 12, 30, 0),
-        ), patch.object(
-            student_sheet_registration,
-            "_upload_bytes_to_gcs",
-            side_effect=[
-                "https://example.com/duplicates.csv",
-                "https://example.com/other.csv",
+            student_sheet_registration.random,
+            "random",
+            return_value=0.25,
+        ), patch.object(student_sheet_registration.time_module, "sleep") as sleep:
+            result = student_sheet_registration._sheets_post(
+                session,
+                "https://sheets.googleapis.com/test",
+                {"data": []},
+            )
+
+        self.assertEqual(result, {"updatedCells": 1})
+        self.assertEqual(session.post.call_count, 2)
+        sleep.assert_called_once_with(60.25)
+
+    def test_retry_schedule_uses_one_to_sixteen_minute_bases(self):
+        response = SimpleNamespace(headers={})
+        with patch.object(student_sheet_registration.random, "random", return_value=0.5):
+            delays = [
+                student_sheet_registration._sheets_retry_delay(response, retry_number)
+                for retry_number in range(student_sheet_registration.SHEETS_MAX_RETRIES)
+            ]
+
+        self.assertEqual(delays, [60.5, 120.5, 240.5, 480.5, 960.5])
+
+    def test_sheets_post_fails_after_five_minute_scale_waits(self):
+        rate_limited = SimpleNamespace(
+            ok=False,
+            status_code=429,
+            headers={},
+            content=b"",
+            json=lambda: {"error": {"status": "RESOURCE_EXHAUSTED"}},
+            text="quota exceeded",
+        )
+        session = MagicMock()
+        session.post.return_value = rate_limited
+
+        with patch.object(
+            student_sheet_registration.random,
+            "random",
+            return_value=0.0,
+        ), patch.object(student_sheet_registration.time_module, "sleep") as sleep:
+            with self.assertRaises(student_sheet_registration.frappe.ValidationError):
+                student_sheet_registration._sheets_post(
+                    session,
+                    "https://sheets.googleapis.com/test",
+                    {"data": []},
+                )
+
+        self.assertEqual(session.post.call_count, 6)
+        self.assertEqual(
+            [call.args[0] for call in sleep.call_args_list],
+            [60.0, 120.0, 240.0, 480.0, 960.0],
+        )
+
+
+class TestStudentSheetRegistrationArtifacts(unittest.TestCase):
+    def test_done_and_registered_duplicate_rows_are_skipped(self):
+        source_sheet = student_sheet_registration.SourceSheet(
+            language="English",
+            spreadsheet_id="sheet-1",
+            sheet_id=0,
+            spreadsheet_title="Registrations",
+            sheet_title="Students",
+            header_map={},
+            status_column_index=7,
+            process_status_column_index=8,
+            rows=[
+                {
+                    "row_number": 2,
+                    "registration_status": "Done",
+                    "contact_phone_number": "9876543210",
+                },
+                {
+                    "row_number": 3,
+                    "registration_status": student_sheet_registration.DUPLICATE_DONE_MESSAGE,
+                    "contact_phone_number": "9123456789",
+                },
             ],
-        ) as upload:
-            file_urls = student_sheet_registration._create_and_upload_failure_csvs([
-                {"message": "Duplicate contact_phone_number already registered"},
-                {"message": "Invalid grade"},
-            ])
+        )
 
-        self.assertEqual(
-            file_urls["duplicate_phone_numbers_file_url"],
-            "https://example.com/duplicates.csv",
+        with patch.object(
+            student_sheet_registration,
+            "_get_sheets_session",
+        ), patch.object(
+            student_sheet_registration,
+            "_read_all_source_sheets",
+            return_value=[source_sheet],
+        ), patch.object(
+            student_sheet_registration,
+            "_get_language_id",
+            return_value="LANG-EN",
+        ), patch.object(
+            student_sheet_registration,
+            "_prepare_source_row",
+        ) as prepare_row, patch.object(
+            student_sheet_registration,
+            "_write_status_updates",
+        ) as write_updates, patch.object(
+            student_sheet_registration,
+            "_create_and_upload_prepared_workbook",
+            return_value="https://example.com/prepared.xlsx",
+        ):
+            result = student_sheet_registration.prepare_student_sheet_registration(
+                log_fn=lambda _message: None
+            )
+
+        prepare_row.assert_not_called()
+        self.assertEqual(result["summary"]["skipped_done_rows"], 2)
+        self.assertEqual(len(write_updates.call_args.args[1]), 2)
+        self.assertTrue(all(
+            update["value"] == student_sheet_registration.PROCESS_STATUS_COMPLETE
+            for update in write_updates.call_args.args[1]
+        ))
+
+    def test_preparation_uploads_ready_workbook_and_one_failure_workbook(self):
+        source_sheet = student_sheet_registration.SourceSheet(
+            language="English",
+            spreadsheet_id="sheet-1",
+            sheet_id=0,
+            spreadsheet_title="Registrations",
+            sheet_title="Students",
+            header_map={},
+            status_column_index=7,
+            process_status_column_index=8,
+            rows=[
+                {"row_number": 2, "registration_status": "", "student_name": "Ready"},
+                {"row_number": 3, "registration_status": "", "student_name": "Failed"},
+            ],
         )
-        self.assertEqual(file_urls["other_failures_file_url"], "https://example.com/other.csv")
-        self.assertEqual(
-            upload.call_args_list[0].args[1],
-            "student-sheet-registration/not-done/duplicate-phone-numbers/"
-            "student_sheet_registration_duplicate_phone_numbers_20260821_123000.csv",
-        )
-        self.assertEqual(
-            upload.call_args_list[1].args[1],
-            "student-sheet-registration/not-done/other-failures/"
-            "student_sheet_registration_other_failures_20260821_123000.csv",
-        )
+        ready = {
+            "spreadsheet_id": "sheet-1",
+            "status_range": "'Students'!G2",
+            "process_status_range": "'Students'!H2",
+            "prepare_status": "Ready",
+            "phone": "919876543210",
+            "message": "",
+        }
+        failed = {
+            "spreadsheet_id": "sheet-1",
+            "status_range": "'Students'!G3",
+            "process_status_range": "'Students'!H3",
+            "prepare_status": "Error",
+            "phone": "",
+            "message": "Invalid grade",
+        }
+
+        with patch.object(
+            student_sheet_registration,
+            "_get_sheets_session",
+        ), patch.object(
+            student_sheet_registration,
+            "_read_all_source_sheets",
+            return_value=[source_sheet],
+        ), patch.object(
+            student_sheet_registration,
+            "_get_language_id",
+            return_value="LANG-EN",
+        ), patch.object(
+            student_sheet_registration,
+            "_prepare_source_row",
+            side_effect=[ready, failed],
+        ), patch.object(
+            student_sheet_registration,
+            "_write_status_updates",
+        ), patch.object(
+            student_sheet_registration,
+            "_create_and_upload_prepared_workbook",
+            return_value="https://example.com/prepared.xlsx",
+        ) as prepared_workbook, patch.object(
+            student_sheet_registration,
+            "_create_and_upload_failed_rows_workbook",
+            return_value="https://example.com/failures.xlsx",
+        ) as failure_workbook:
+            result = student_sheet_registration.prepare_student_sheet_registration(
+                log_fn=lambda _message: None
+            )
+
+        prepared_workbook.assert_called_once_with([ready])
+        failure_workbook.assert_called_once_with([failed])
+        self.assertEqual(result["summary"]["prepared_file_url"], "https://example.com/prepared.xlsx")
+        self.assertEqual(result["summary"]["failed_rows_file_url"], "https://example.com/failures.xlsx")
+        self.assertNotIn("duplicate_phone_numbers_file_url", result["summary"])
+        self.assertNotIn("other_failures_file_url", result["summary"])
+
+    def test_upload_does_not_reread_source_sheets(self):
+        ready = {
+            "spreadsheet_id": "sheet-1",
+            "sheet_id": 0,
+            "sheet_title": "Students",
+            "row_number": 2,
+            "status_range": "'Students'!G2",
+            "process_status_range": "'Students'!H2",
+            "prepare_status": "Ready",
+            "phone": "919876543210",
+            "student_name": "Student One",
+        }
+
+        with patch.object(
+            student_sheet_registration,
+            "_get_sheets_session",
+        ), patch.object(
+            student_sheet_registration,
+            "_read_all_source_sheets",
+        ) as read_sheets, patch.object(
+            student_sheet_registration,
+            "_upsert_student",
+            return_value=SimpleNamespace(name="ST00000001"),
+        ), patch.object(
+            student_sheet_registration,
+            "_write_status_updates",
+        ), patch.object(
+            student_sheet_registration,
+            "_create_and_upload_glific_contact_csvs",
+            return_value=[],
+        ):
+            result = student_sheet_registration.upload_prepared_student_sheet_registration(
+                [ready],
+                log_fn=lambda _message: None,
+            )
+
+        read_sheets.assert_not_called()
+        self.assertEqual(result["uploaded_rows"], 1)
 
 
 class TestStudentSheetRegistrationCronCounts(unittest.TestCase):
