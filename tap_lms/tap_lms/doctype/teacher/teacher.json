@@ -99,7 +99,7 @@
    "fieldname": "teacher_role",
    "fieldtype": "Select",
    "label": "Teacher Role",
-   "options": "\nPrincipal/ HOS\nPrincipal/ School Head\nHead Teacher/Incharge Head Teacher\nNodal Teacher\nTeacher\nGovt Nodal Office\nMentor Teachers\nZonal Coordinators\nDeputy Director Education\nDistrict Coordinator"
+   "options": "\nPrincipal/ HOS\nPrincipal/ School Head\nHead Teacher/Incharge Head Teacher\nNodal Teacher\nTeacher\nGovt Nodal Officer\nMentor Teachers\nZonal Coordinators\nDeputy Director Education\nDistrict Coordinator"
   },
   {
    "fieldname": "teacher_batch",
