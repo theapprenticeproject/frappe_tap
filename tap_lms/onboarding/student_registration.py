@@ -56,12 +56,7 @@ SCHOOL_STATE_LANGUAGE_MAP = {
     "DELHI": "Hinglish",
 }
 
-SCHOOL_FLOW_REGISTRATION_CITIES = {
-    "DoE Zone 27",
-    "DoE Zone 28",
-    "DoE- North Zone 7",
-    "DoE Zone 8"
-}
+SCHOOL_FLOW_REGISTRATION_CITIES = { }
 
 CREATE_STUDENT_WEB_MAX_RETRIES = 3
 CREATE_STUDENT_WEB_RETRY_BACKOFFS = (0.05, 0.10, 0.20)
@@ -222,7 +217,7 @@ def _get_school_language(state):
 
 
 def _get_school_registration_type(city):
-    return "flow" if (city or "").strip() in SCHOOL_FLOW_REGISTRATION_CITIES else "form"
+    return "flow" if (city).strip() in SCHOOL_FLOW_REGISTRATION_CITIES else "form"
 
 
 def _upsert_student_consent(phone_number, school_id=None, whatsapp_consent=0):
