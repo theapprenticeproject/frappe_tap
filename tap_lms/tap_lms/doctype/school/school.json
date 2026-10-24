@@ -75,7 +75,7 @@
    "fieldname": "department",
    "fieldtype": "Select",
    "label": "Department",
-   "options": "Basic Education Department\nMadhyamik Shiksha Parishad\nOther"
+   "options": "Basic Education Department\nMadhyamik Shiksha Parishad\nPrimary\nSecondary\nOther"
   },
   {
    "fieldname": "pin",

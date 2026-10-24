@@ -246,6 +246,98 @@ def submit_artwork(assignment_id, student_id, submission):
 
 
 @frappe.whitelist(allow_guest=True)
+def submit_artwork_audio(submission_id, audio):
+    """Queue an audio explanation URL for upload to GCS and save it."""
+    try:
+        if not _looks_like_url(audio):
+            frappe.throw("Audio must be a valid HTTP or HTTPS URL")
+
+        if not frappe.db.exists("Submission", submission_id):
+            frappe.local.response.update(
+                {
+                    "success": False,
+                    "status": "submission_not_found",
+                    "error_detail": f"Submission {submission_id} not found",
+                }
+            )
+            return
+
+        job = frappe.enqueue(
+            "tap_lms.imgana.submission.process_artwork_audio_async",
+            queue="long",
+            timeout=600,
+            enqueue_after_commit=True,
+            submission_id=submission_id,
+            audio=audio,
+        )
+        frappe.db.commit()
+        frappe.logger("submission").info(
+            f"Artwork audio upload queued: submission_id={submission_id}, "
+            f"queue=long, job_id={getattr(job, 'id', None)}"
+        )
+
+        return {
+            "success": True,
+            "status": "accepted",
+            "message": "Audio explanation received",
+            "submission_id": submission_id,
+        }
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        frappe.local.response.update(
+            {
+                "success": False,
+                "status": "validation_error",
+                "error_detail": str(exc),
+            }
+        )
+        return
+    except Exception as exc:
+        frappe.db.rollback()
+        frappe.log_error(
+            f"submit_artwork_audio failed for submission_id={submission_id}: "
+            f"{type(exc).__name__}: {exc}",
+            "Submit Artwork Audio",
+        )
+        frappe.local.response.update(
+            {
+                "success": False,
+                "status": "internal_error",
+                "error_detail": f"{type(exc).__name__}: {exc}",
+            }
+        )
+        return
+
+
+def process_artwork_audio_async(submission_id, audio):
+    """Upload an audio explanation URL to GCS and save its resulting URL."""
+    try:
+        from tap_lms.imgana.gcs_client import upload_to_gcs
+
+        uploaded_url = upload_to_gcs(audio, submission_id, media_type="audio")
+        frappe.db.set_value(
+            "Submission",
+            submission_id,
+            "audio_explanation",
+            uploaded_url,
+            update_modified=False,
+        )
+        frappe.db.commit()
+        frappe.logger("submission").info(
+            f"Artwork audio saved: submission_id={submission_id}, "
+            f"audio_explanation={uploaded_url}"
+        )
+    except Exception as exc:
+        frappe.db.rollback()
+        frappe.log_error(
+            f"Artwork audio processing failed for submission_id={submission_id}: "
+            f"{type(exc).__name__}: {exc}",
+            "Process Artwork Audio",
+        )
+        raise
+
+
+@frappe.whitelist(allow_guest=True)
 def submission_feedback(submission_id):
     """
     API endpoint to get feedback for a regular submission.

@@ -14,6 +14,7 @@
   "submission_type",
   "submission_text",
   "submission_url",
+  "audio_explanation",
   "status",
   "feedback_flow_id",
   "feedback_requested_at",
@@ -86,6 +87,11 @@
    "fieldname": "submission_url",
    "fieldtype": "Data",
    "label": "Submission URL"
+  },
+  {
+   "fieldname": "audio_explanation",
+   "fieldtype": "Data",
+   "label": "Audio Explanation"
   },
   {
    "fieldname": "status",

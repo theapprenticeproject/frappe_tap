@@ -361,12 +361,24 @@ def _get_school_course_vertical_names(school_id, grade):
     return result
 
 
-def _ensure_teacher_enrollment(teacher_doc, school_row, batch_id):
+def _ensure_teacher_enrollment(
+    teacher_doc,
+    school_row,
+    batch_id,
+    grade=None,
+    section=None,
+):
     if not school_row or not batch_id:
         return
 
+    grade = str(grade or "").strip()
+    section = str(section or "").strip()
     for enrollment in teacher_doc.get("enrollment") or []:
         if enrollment.batch == batch_id and enrollment.school == school_row["school_id"]:
+            if grade:
+                enrollment.grade = grade
+            if section:
+                enrollment.section = section
             return
 
     teacher_doc.append(
@@ -374,6 +386,8 @@ def _ensure_teacher_enrollment(teacher_doc, school_row, batch_id):
         {
             "batch": batch_id,
             "school": school_row["school_id"],
+            "grade": grade,
+            "section": section,
             "date_joining": now_datetime().date(),
             "whatsapp_response": 0,
         },

@@ -49,6 +49,7 @@ TRANSIENT_DB_CONFLICT_SNIPPETS = (
     "deadlock detected",
     "current transaction is aborted",
 )
+VALID_TEACHER_GRADES = {str(grade) for grade in range(3, 13)} | {"NA"}
 
 STATE_RESPONSE_PAYLOAD_MAP = {
     "TELANGANA": {
@@ -277,6 +278,8 @@ def get_teacher_details():
             return
 
         school_row = _get_school_row_by_id(teacher.school_id) if teacher.school_id else None
+        teacher_doc = frappe.get_doc("Teacher", teacher.name)
+        latest_enrollment = _get_latest_enrollment(teacher_doc)
         name_parts = [
             part for part in (
                 str(teacher.first_name or "").strip(),
@@ -290,6 +293,8 @@ def get_teacher_details():
             "state": school_row["state"] if school_row else "",
             "district": school_row["district"] if school_row else "",
             "city": school_row["city"] if school_row else "",
+            "grade": latest_enrollment.grade if latest_enrollment else "",
+            "section": latest_enrollment.section if latest_enrollment else "",
             "school": school_row["school_name"] if school_row else "",
             "role": teacher.teacher_role or "",
             "language": _get_language_id_to_name(teacher.language),
@@ -329,6 +334,12 @@ def _update_teacher_details_once(data):
         _respond(404, {"status": "failure", "message": "School not found"})
         return
 
+    grade = str(data.get("grade") or "").strip()
+    if grade and grade not in VALID_TEACHER_GRADES:
+        _respond(400, {"status": "failure", "message": "Grade must be between 3 and 12 or NA"})
+        return
+    section = str(data.get("section") or "").strip()
+
     teacher_name = frappe.db.get_value("Teacher", _phone_filter("phone_number", phone), "name")
     if not teacher_name:
         _respond(404, {"status": "failure", "message": "Teacher not found"})
@@ -351,7 +362,13 @@ def _update_teacher_details_once(data):
         teacher.state = school_row["state_id"]
         teacher.teacher_batch = _get_latest_school_batch_id(school_row["school_id"])
         if teacher.teacher_batch:
-            _ensure_teacher_enrollment(teacher, school_row, teacher.teacher_batch)
+            _ensure_teacher_enrollment(
+                teacher,
+                school_row,
+                teacher.teacher_batch,
+                grade=grade,
+                section=section,
+            )
 
     teacher.save(ignore_permissions=True)
     _enqueue_glific_contact_sync("Teacher", teacher.name)
@@ -381,11 +398,22 @@ def _create_teacher_web_once(data):
 
     teacher_name = (data.get("name") or "").strip()
     school_value = (data.get("school") or "").strip()
-    if not teacher_name or not school_value:
+    grade = str(data.get("grade") or "").strip()
+    section = str(data.get("section") or "").strip()
+    if (
+        not teacher_name
+        or not school_value
+        or not grade
+        or (grade != "NA" and not section)
+    ):
         _respond(400, {
             "status": "failure",
-            "message": "Missing required field: name or school",
+            "message": "Missing required field: name, school, grade, or section",
         })
+        return
+
+    if grade not in VALID_TEACHER_GRADES:
+        _respond(400, {"status": "failure", "message": "Grade must be between 3 and 12 or NA"})
         return
 
     if frappe.db.exists("Teacher", _phone_filter("phone_number", phone)):
@@ -420,7 +448,13 @@ def _create_teacher_web_once(data):
         }
     )
     if teacher.teacher_batch:
-        _ensure_teacher_enrollment(teacher, school_row, teacher.teacher_batch)
+        _ensure_teacher_enrollment(
+            teacher,
+            school_row,
+            teacher.teacher_batch,
+            grade=grade,
+            section=section,
+        )
     teacher.insert(ignore_permissions=True)
     _enqueue_glific_contact_sync("Teacher", teacher.name)
     frappe.db.commit()
