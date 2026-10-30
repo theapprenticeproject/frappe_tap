@@ -4,7 +4,7 @@ Handles text-to-speech conversion and GCS upload for feedback audio.
 """
 import os
 import frappe
-from tap_lms.audio.audio_helpers import generate_speech_file
+from tap_lms.feedback_handler.audio.audio_helpers import generate_speech_file
 from tap_lms.imgana.gcs_client import upload_audio_feedback_to_gcs
 
 

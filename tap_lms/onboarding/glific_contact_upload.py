@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import frappe
 from dateutil.parser import isoparse
 
-from tap_lms.glific_integration import (
+from tap_lms.utils.glific_integration import (
     _glific_post_with_401_retry,
     get_glific_settings,
 )

@@ -6,7 +6,7 @@ import pika
 import time
 from typing import Dict
 
-from ..glific_integration import start_contact_flow
+from ..utils.glific_integration import start_contact_flow
 from .feedback_processor import FeedbackProcessor
 
 GLIFIC_FEEDBACK_FLOW_ID = "34108"
@@ -470,9 +470,9 @@ class FeedbackConsumer:
                 frappe.db.rollback()
                 return False
 
-            result = self._update_sp_state(submission_id, message_data) or {}
-            if result.get("status") == "error":
-                raise Exception(result.get("message") or "on_feedback_ready failed")
+            # result = self._update_sp_state(submission_id, message_data) or {}
+            # if result.get("status") == "error":
+            #     raise Exception(result.get("message") or "on_feedback_ready failed")
 
             frappe.db.commit()
             return True
@@ -496,47 +496,47 @@ class FeedbackConsumer:
             frappe.logger().warning(f"Glific notification failed for {submission_id}: {str(glific_error)}")
             # Continue processing - notification failure shouldn't fail the entire message
 
-    def _update_sp_state(self, submission_id, message_data):
-        """
-        Summer Program hook: advance PE state from submitted_awaiting_feedback
-        to feedback_ready (T12) after AI feedback is processed.
+    # def _update_sp_state(self, submission_id, message_data):
+    #     """
+    #     Summer Program hook: advance PE state from submitted_awaiting_feedback
+    #     to feedback_ready (T12) after AI feedback is processed.
 
-        This is non-critical — if it fails, pe_dispatcher's handle_feedback_timeout
-        will catch it within 1-4 hours as a safety net.
+    #     This is non-critical — if it fails, pe_dispatcher's handle_feedback_timeout
+    #     will catch it within 1-4 hours as a safety net.
 
-        The Glific notification is sent after this hook commits, so callbacks
-        from the feedback flow can read the updated ProgramEnrollment state.
-        """
-        try:
-            from tap_lms.summer_program.feedback_consumer_hook import on_feedback_ready
+    #     The Glific notification is sent after this hook commits, so callbacks
+    #     from the feedback flow can read the updated ProgramEnrollment state.
+    #     """
+    #     try:
+    #         from tap_lms.summer_program.feedback_consumer_hook import on_feedback_ready
 
-            student_id = message_data.get("student_id")
-            result = on_feedback_ready(submission_id, student_id)
+    #         student_id = message_data.get("student_id")
+    #         result = on_feedback_ready(submission_id, student_id)
 
-            if result.get("status") == "transitioned":
-                frappe.logger().info(
-                    f"[SP] feedback_ready transition done for PE {result.get('pe')}"
-                )
-            elif result.get("status") == "error":
-                frappe.logger().warning(
-                    f"[SP] Hook returned error for {submission_id}: {result.get('message')}"
-                )
-            return result
-        except ImportError as e:
-            # CR-026: an ImportError here is almost never "SP module not
-            # installed" (it is) — it is a STALE module cache in this
-            # long-running consumer. Surface it instead of skipping silently so
-            # it is not mistaken for a benign no-op. Re-raise so process_message
-            # logs it durably and the message is NACKed (not silently acked).
-            frappe.logger().error(
-                f"[SP] ImportError resolving on_feedback_ready for {submission_id}: "
-                f"{str(e)} — consumer likely needs a restart (stale module cache)."
-            )
-            raise
-        except Exception as e:
-            frappe.logger().warning(f"[SP] State update failed for {submission_id}: {str(e)}")
-            # Re-raise so process_message logs it but continues
-            raise
+    #         if result.get("status") == "transitioned":
+    #             frappe.logger().info(
+    #                 f"[SP] feedback_ready transition done for PE {result.get('pe')}"
+    #             )
+    #         elif result.get("status") == "error":
+    #             frappe.logger().warning(
+    #                 f"[SP] Hook returned error for {submission_id}: {result.get('message')}"
+    #             )
+    #         return result
+    #     except ImportError as e:
+    #         # CR-026: an ImportError here is almost never "SP module not
+    #         # installed" (it is) — it is a STALE module cache in this
+    #         # long-running consumer. Surface it instead of skipping silently so
+    #         # it is not mistaken for a benign no-op. Re-raise so process_message
+    #         # logs it durably and the message is NACKed (not silently acked).
+    #         frappe.logger().error(
+    #             f"[SP] ImportError resolving on_feedback_ready for {submission_id}: "
+    #             f"{str(e)} — consumer likely needs a restart (stale module cache)."
+    #         )
+    #         raise
+    #     except Exception as e:
+    #         frappe.logger().warning(f"[SP] State update failed for {submission_id}: {str(e)}")
+    #         # Re-raise so process_message logs it but continues
+    #         raise
 
     def send_glific_notification(self, message_data: Dict):
         """Send feedback notification via Glific with proper error handling.

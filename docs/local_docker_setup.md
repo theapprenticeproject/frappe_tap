@@ -123,7 +123,6 @@ Password: the ADMIN_PASSWORD value from `env.local`
 
 The active folders reviewed were:
 
-- `tap_lms/audio`
 - `tap_lms/config`
 - `tap_lms/feedback_handler`
 - `tap_lms/imgana`
@@ -134,7 +133,7 @@ The local setup needs these integration settings available:
 
 - `RabbitMQ Settings`: used by `tap_lms/imgana/submission.py` and `tap_lms/feedback_handler/feedback_consumer.py`.
 - `GCS Settings`: used by image submission upload flows in `tap_lms/imgana/submission.py`. It can stay disabled for a basic local site.
-- `ElevenLabs Settings`: used by `tap_lms/audio/audio_helpers.py`. It can stay disabled for a basic local site.
+- `ElevenLabs Settings`: used by `tap_lms/feedback_handler/audio/audio_helpers.py`. It can stay disabled for a basic local site.
 - `VoiceAgentSettings`: used by `tap_lms/summer_program/vocallabs.py`. It can stay disabled for a basic local site.
 
 The script seeds those single DocTypes from `.env`. RabbitMQ should be filled when you want image submission publishing or feedback consumption to work. The other integrations can remain disabled unless you are testing those flows.

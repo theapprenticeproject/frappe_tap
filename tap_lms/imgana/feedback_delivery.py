@@ -23,7 +23,7 @@ import time
 import frappe
 from frappe.utils import add_to_date, now_datetime
 
-from tap_lms.glific_integration import (
+from tap_lms.utils.glific_integration import (
     _parse_glific_fields_blob,
     get_contact_by_phone,
     start_contact_flow,

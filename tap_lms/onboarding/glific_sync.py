@@ -1,6 +1,6 @@
 import frappe
 
-from tap_lms.glific_integration import (
+from tap_lms.utils.glific_integration import (
     _set_glific_sync_status,
     create_contact,
     get_contact_by_phone,
@@ -14,7 +14,7 @@ from tap_lms.onboarding.utils import (
     _get_latest_enrollment,
     _get_phone_lookup_variants,
 )
-from tap_lms.school_utils import get_school_state_model_details
+from tap_lms.utils.school_utils import get_school_state_model_details
 
 
 GLIFIC_SYNC_MAX_RETRIES = 3

@@ -23,8 +23,7 @@
   "estimated_duration",
   "completion_criteria",
   "status",
-  "certificate_on_completion",
-  "sdg_alignment"
+  "certificate_on_completion"
  ],
  "fields": [
   {
@@ -125,12 +124,6 @@
    "fieldtype": "Select",
    "label": "Activity Type",
    "options": "engagement\nbaseline\nchallenge\nregular"
-  },
-  {
-   "fieldname": "sdg_alignment",
-   "fieldtype": "Table",
-   "label": "SDG Alignment",
-   "options": "LearningUnitSDG"
   }
  ],
  "index_web_pages_for_search": 1,

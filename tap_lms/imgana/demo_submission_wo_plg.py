@@ -11,7 +11,7 @@ from google import genai
 from google.genai import types
 from google.oauth2 import service_account
 
-from tap_lms.glific_integration import start_contact_flow
+from tap_lms.utils.glific_integration import start_contact_flow
 from tap_lms.imgana.gcs_client import get_gcs_client, upload_to_gcs
 from tap_lms.imgana.media_detection import detect_url_media_type
 

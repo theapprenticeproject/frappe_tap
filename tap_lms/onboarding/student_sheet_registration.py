@@ -835,7 +835,7 @@ def _get_school_id_from_glific(phone: str) -> tuple[str, str]:
 
 
 def _get_school_id_from_glific_contact(phone: str) -> tuple[str, str]:
-    from tap_lms.glific_integration import get_contact_by_phone
+    from tap_lms.utils.glific_integration import get_contact_by_phone
 
     for candidate_phone in _phone_variants(phone):
         contact = get_contact_by_phone(candidate_phone)

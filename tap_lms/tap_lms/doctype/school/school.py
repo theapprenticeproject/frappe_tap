@@ -1,6 +1,6 @@
 import frappe
 from frappe.model.document import Document
-from tap_lms.school_utils import generate_unique_keyword
+from tap_lms.utils.school_utils import generate_unique_keyword
 
 class School(Document):
     pass
