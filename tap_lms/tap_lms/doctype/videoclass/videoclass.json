@@ -14,6 +14,7 @@
   "duration",
   "difficulty_tier",
   "description",
+  "assessments",
   "video_file",
   "video_plio_url",
   "subtitle_file",
@@ -22,7 +23,6 @@
   "video_translations",
   "additional_files",
   "estimated_duration",
-  "assessments",
   "points"
  ],
  "fields": [

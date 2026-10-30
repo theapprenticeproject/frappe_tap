@@ -17,6 +17,7 @@
   "section_break_details",
   "course",
   "grade",
+  "section",
   "section_break_images",
   "image_count",
   "media_match_status",
@@ -102,6 +103,12 @@
    "in_list_view": 1,
    "label": "Grade",
    "options": "\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12"
+  },
+  {
+   "fieldname": "section",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Section"
   },
   {
    "fieldname": "section_break_images",
