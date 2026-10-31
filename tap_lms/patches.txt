@@ -1,5 +1,7 @@
 [pre_model_sync]
 
+tap_lms.patches.v0_4.rename_assignment_subject_to_vertical
+
 [post_model_sync]
 tap_lms.patches.cr_004_scale.idx_pe_next_action
 tap_lms.patches.cr_004_batch_id_unique.batch_id_unique_constraint
@@ -13,3 +15,7 @@ tap_lms.patches.br_003.sp_doctypes_hash_autoname
 tap_lms.patches.cr_2026_06_19.enrollment_hash_autoname
 tap_lms.patches.v0_3.submission_feedback_flow_id
 tap_lms.patches.save_feedback_delivery_settings
+tap_lms.patches.v0_4.backfill_assignment_level
+tap_lms.patches.v0_4.drop_submission_feedback_text_columns
+tap_lms.patches.v0_4.set_assignment_type_from_learning_unit
+tap_lms.patches.v0_4.rename_learning_units

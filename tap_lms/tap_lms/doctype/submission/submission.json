@@ -8,55 +8,65 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
+  "submission_details_section",
   "assign_id",
-  "student_column_break",
   "student_id",
+  "program_enrollment",
+  "student_column_break",
+  "week",
+  "escalation_step_at_submit",
+  "is_primary",
+  "submission_validity",
+  "status_column_break",
+  "status",
+  "result_status",
+  "grade",
+  "created_at",
+  "completed_at",
+  "content_section",
   "submission_type",
   "submission_text",
+  "content_column_break",
   "submission_url",
   "audio_explanation",
-  "status",
+  "delivery_section",
   "feedback_flow_id",
   "feedback_requested_at",
   "feedback_ready_processed_at",
   "feedback_flow_triggered_at",
-  "feedback_delivery_attempts",
+  "delivery_column_break",
   "feedback_claimed_at",
+  "feedback_delivery_attempts",
   "feedback_delivery_status",
   "feedback_delivery_error",
   "upload_error_log",
-  "result_status",
-  "created_at",
-  "grade",
+  "feedback_section",
   "overall_feedback",
+  "feedback_column_break",
   "overall_feedback_translated",
+  "language_section",
   "translation_language",
+  "language_column_break",
   "audio_feedback_url",
-  "strengths",
-  "areas_for_improvement",
-  "learning_objectives_feedback",
-  "encouragement",
+  "feedback_details_section",
+  "generated_feedback",
+  "feedback_details_column_break",
+  "rubric_section",
+  "rubric_evaluations",
   "plagiarism_section",
   "plagiarism_status",
   "is_plagiarized",
+  "is_ai_generated",
   "match_type",
+  "plagiarism_column_break",
   "plagiarism_source",
   "similarity_score",
   "similar_sources",
-  "ai_detection_section",
-  "is_ai_generated",
-  "ai_detection_source",
-  "ai_confidence",
-  "feedback_section",
-  "rubric_evaluations",
   "plagiarism_result",
-  "completed_at",
-  "generated_feedback",
-  "program_enrollment",
-  "week",
-  "escalation_step_at_submit",
-  "is_primary",
-  "submission_validity"
+  "ai_detection_section",
+  "ai_detection_source",
+  "ai_detection_column_break",
+  "ai_confidence"
  ],
  "fields": [
   {
@@ -201,26 +211,6 @@
    "label": "Audio Feedback URL"
   },
   {
-   "fieldname": "strengths",
-   "fieldtype": "Text",
-   "label": "Strengths"
-  },
-  {
-   "fieldname": "areas_for_improvement",
-   "fieldtype": "Text",
-   "label": "Areas for Improvement"
-  },
-  {
-   "fieldname": "learning_objectives_feedback",
-   "fieldtype": "Text",
-   "label": "Learning Objectives Feedback"
-  },
-  {
-   "fieldname": "encouragement",
-   "fieldtype": "Text",
-   "label": "Encouragement"
-  },
-  {
    "fieldname": "plagiarism_section",
    "fieldtype": "Section Break",
    "label": "Plagiarism Detection Results"
@@ -343,6 +333,68 @@
    "fieldname": "submission_validity",
    "fieldtype": "Data",
    "label": "Submission Validity"
+  },
+  {
+   "fieldname": "submission_details_section",
+   "fieldtype": "Section Break",
+   "label": "Submission Details"
+  },
+  {
+   "fieldname": "status_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "content_section",
+   "fieldtype": "Section Break",
+   "label": "Submission Content"
+  },
+  {
+   "fieldname": "content_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "feedback_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "feedback_details_section",
+   "fieldtype": "Section Break",
+   "label": "Feedback Details"
+  },
+  {
+   "fieldname": "feedback_details_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "rubric_section",
+   "fieldtype": "Section Break",
+   "label": "Rubric Evaluations"
+  },
+  {
+   "fieldname": "plagiarism_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "ai_detection_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "delivery_section",
+   "fieldtype": "Section Break",
+   "label": "Feedback Delivery",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "delivery_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "language_section",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "language_column_break",
+   "fieldtype": "Column Break"
   }
  ],
  "index_web_pages_for_search": 1,

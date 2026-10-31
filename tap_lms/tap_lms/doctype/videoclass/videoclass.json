@@ -1,7 +1,6 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:{video_name}-{difficulty_tier}",
  "creation": "2024-10-17 16:19:12.281729",
  "default_view": "List",
  "doctype": "DocType",
@@ -140,5 +139,6 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "track_changes": 1
+ "track_changes": 1,
+ "autoname": "format:{video_name}-{###}"
 }

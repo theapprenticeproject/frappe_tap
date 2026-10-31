@@ -167,19 +167,6 @@ class FeedbackProcessor:
         result_status = self._determine_result_status(is_plagiarized, is_ai_generated)
         grade = self._extract_grade(feedback_data, submission_id)
 
-        strengths = feedback_data.get("strengths", [])
-        strengths_message = "\n".join([f"• {strength}" for strength in strengths])
-
-        areas_for_improvement = feedback_data.get("areas_for_improvement", [])
-        areas_for_improvement_message = "\n".join(
-            [f"• {area}" for area in areas_for_improvement]
-        )
-
-        learning_objectives_feedback = feedback_data.get("learning_objectives_feedback", [])
-        learning_objectives_feedback_message = "\n".join(
-            [f"• {objective}" for objective in learning_objectives_feedback]
-        )
-
         rubric_evaluations = feedback_data.get("rubric_evaluations", [])
         rubric_evaluations_rows = []
         for rubric in rubric_evaluations:
@@ -268,10 +255,6 @@ class FeedbackProcessor:
             "translation_language": translation_language,
             "audio_feedback_url": audio_feedback_url,
             "generated_feedback": json.dumps(feedback_data, indent=2, ensure_ascii=False),
-            "learning_objectives_feedback": learning_objectives_feedback_message,
-            "strengths": strengths_message,
-            "areas_for_improvement": areas_for_improvement_message,
-            "encouragement": feedback_data.get("encouragement", ""),
             # Child table field
             "rubric_evaluations": rubric_evaluations_rows,
             "plagiarism_result": message_data.get("plagiarism_score", 0),

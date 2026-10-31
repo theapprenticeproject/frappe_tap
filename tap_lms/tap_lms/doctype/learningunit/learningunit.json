@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:{unit_name}-{course_level}-{difficulty_tier}",
+ "autoname": "format:Unit -{week_no}-{course_level}-{###}",
  "creation": "2024-10-17 15:31:17.464836",
  "default_view": "List",
  "doctype": "DocType",

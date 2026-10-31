@@ -559,25 +559,11 @@ def _update_submission_with_feedback(submission_id, feedback_data, language):
     simple_fields = {
         "overall_feedback": "overall_feedback",
         "overall_feedback_translated": "overall_feedback_translated",
-        "encouragement": "encouragement",
         "submission_validity": "submission_validity",
     }
     for source_field, target_field in simple_fields.items():
         if source_field in feedback_data:
             _set_if_field(submission_doc, target_field, feedback_data[source_field] or "")
-
-    list_fields = {
-        "strengths": "strengths",
-        "areas_for_improvement": "areas_for_improvement",
-        "learning_objectives_feedback": "learning_objectives_feedback",
-    }
-    for source_field, target_field in list_fields.items():
-        if source_field in feedback_data:
-            _set_if_field(
-                submission_doc,
-                target_field,
-                _format_feedback_value(feedback_data[source_field]),
-            )
 
     if "final_grade" in feedback_data:
         _set_if_field(submission_doc, "grade", _parse_grade(feedback_data["final_grade"]))
@@ -586,16 +572,6 @@ def _update_submission_with_feedback(submission_id, feedback_data, language):
 
     submission_doc.save(ignore_permissions=True)
     frappe.db.commit()
-
-
-def _format_feedback_value(value):
-    if isinstance(value, list):
-        return "\n".join(f"- {item}" for item in value if item)
-    if isinstance(value, str):
-        return value
-    if value is None:
-        return ""
-    return json.dumps(value, ensure_ascii=False)
 
 
 def _parse_grade(value):

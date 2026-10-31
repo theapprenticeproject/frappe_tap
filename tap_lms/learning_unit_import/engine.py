@@ -712,11 +712,10 @@ def create_assignment(
         "name": make_doc_name("ASN", assignment_name),
         "assignment_name": assignment_name,
         "description": clean(row[col_to_index(COL_DESCRIPTION)].text),
-        "assignment_type": "Practical",
-        "subject": course_vertical,
+        "vertical": course_vertical,
         "submission_guidelines": clean(row[col_to_index(COL_ASSIGNMENT_SUBMISSION_GUIDELINES)].text),
         "difficulty_tier": difficulty_tier,
-        "activity_type": map_assignment_activity_type(activity_type),
+        "assignment_type": map_assignment_activity_type(activity_type),
         "assignment_translations": build_assignment_translations(row, assignment_name),
         "submission_media_links": build_submission_media_links(row),
     }
@@ -949,9 +948,10 @@ def create_learning_unit(
         "activity_type": map_learning_unit_activity_type(activity_type),
         "status": ctx.config.default_status,
         "content_items": content_items,
-        # Transient value for LearningUnit's current autoname expression. This
-        # doctype does not define a course_level field, but autoname references it.
+        # Transient values for LearningUnit's autoname expression. This doctype
+        # does not define course_level or week_no fields, but autoname references them.
         "course_level": course_level_for_name,
+        "week_no": activity.week_no,
     }
     filters = [
         ["unit_name", "=", activity_name],

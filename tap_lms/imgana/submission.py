@@ -683,8 +683,8 @@ def get_assignment_context(assignment_id, student_id=None):
                 "program_name": assignment.get("program_name"),
                 "description": assignment.get("description"),
                 "assignment_type": assignment.get("assignment_type"),
-                "activity_type": assignment.get("activity_type"),
-                "course_vertical": assignment.get("subject"),
+                "activity_type": assignment.get("assignment_type"),
+                "course_vertical": assignment.get("vertical"),
                 "difficulty_tier": assignment.get("difficulty_tier"),
                 "submission_guidelines": assignment.get("submission_guidelines"),
                 "submission_rules": submission_rules,
@@ -696,7 +696,7 @@ def get_assignment_context(assignment_id, student_id=None):
         }
 
         # Add custom feedback prompt if enabled
-        if assignment.enable_auto_feedback and assignment.feedback_prompt:
+        if assignment.feedback_prompt:
             context["feedback_prompt"] = assignment.feedback_prompt
             
         return context
