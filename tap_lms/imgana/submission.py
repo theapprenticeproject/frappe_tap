@@ -169,20 +169,6 @@ def submit_artwork(assignment_id, student_id, submission):
             f"submission_is_url={_looks_like_url(raw_submission) if raw_submission.strip() else False}"
         )
 
-        if not frappe.db.exists("Assignment", assignment_id):
-            frappe.logger("submission").warning(
-                f"submit_artwork rejected: assignment not found, "
-                f"assignment_id={assignment_id}, student_id={student_id}"
-            )
-            frappe.local.response.update(
-                {
-                    "success": False,
-                    "status": "not_found",
-                    "error_detail": f"Assignment {assignment_id} not found",
-                }
-            )
-            return
-
         if not frappe.db.exists("Student", student_id):
             frappe.logger("submission").warning(
                 f"submit_artwork rejected: student not found, "
@@ -375,6 +361,7 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
     try:
         submission_doc = frappe.get_doc("Submission", submission_id)
         raw_submission = (raw_submission or submission_url or "").strip()
+
         frappe.logger("submission").info(
             f"Async processing started: submission_id={submission_id}, "
             f"assignment_id={submission_doc.assign_id}, student_id={submission_doc.student_id}, "
@@ -413,6 +400,16 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
             submission_doc.submission_url = None
         elif not (submission_doc.submission_text or submission_doc.submission_url):
             frappe.throw("Submission content is missing")
+
+        if not frappe.db.exists("Assignment", submission_doc.assign_id):
+            submission_doc.status = "Failed"
+            _set_if_field(
+                submission_doc, "upload_error_log", f"Assignment {submission_doc.assign_id} not found"
+            )
+            submission_doc.save(ignore_permissions=True)
+            frappe.db.commit()
+            return
+        submission_doc.assignment_id_link = submission_doc.assign_id
 
         submission_doc.status = "Processing"
         _set_if_field(submission_doc, "upload_error_log", None)

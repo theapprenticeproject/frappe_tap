@@ -10,6 +10,7 @@
  "field_order": [
   "submission_details_section",
   "assign_id",
+  "assignment_id_link",
   "student_id",
   "program_enrollment",
   "student_column_break",
@@ -73,6 +74,12 @@
    "fieldname": "assign_id",
    "fieldtype": "Data",
    "label": "Assignment ID"
+  },
+  {
+   "fieldname": "assignment_id_link",
+   "fieldtype": "Link",
+   "label": "Assignment ID Link",
+   "options": "Assignment"
   },
   {
    "fieldname": "student_column_break",

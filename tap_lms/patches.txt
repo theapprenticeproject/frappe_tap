@@ -22,3 +22,5 @@ tap_lms.patches.v0_4.rename_learning_units
 tap_lms.patches.v0_4.restore_assignment_names
 tap_lms.patches.v0_4.delete_student_content_log
 tap_lms.patches.v0_4.backfill_assignment_program
+tap_lms.patches.v0_4.rename_video_class_and_quiz
+tap_lms.patches.v0_4.backfill_submission_assignment_link
