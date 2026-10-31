@@ -9,10 +9,13 @@
  "engine": "InnoDB",
  "field_order": [
   "assignment_name",
-  "description",
   "assignment_type",
   "vertical",
   "level",
+  "program",
+  "column_break_description",
+  "description",
+  "section_break_details",
   "learning_objectives",
   "submission_guidelines",
   "submission_rules",
@@ -56,6 +59,12 @@
    "fieldtype": "Select",
    "label": "Level",
    "options": "Level 0\nLevel 1\nLevel 2\nLevel 2A\nLevel 3\nLevel 3A\nLevel 3K\nLevel 3AK\nLevel 4\nLevel 4K"
+  },
+  {
+   "fieldname": "program",
+   "fieldtype": "Link",
+   "label": "Program",
+   "options": "Program"
   },
   {
    "fieldname": "learning_objectives",
@@ -137,6 +146,14 @@
    "fieldname": "feedback_prompt",
    "fieldtype": "Text",
    "label": "Feedback Prompt"
+  },
+  {
+   "fieldname": "column_break_description",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_details",
+   "fieldtype": "Section Break"
   }
  ],
  "index_web_pages_for_search": 1,
