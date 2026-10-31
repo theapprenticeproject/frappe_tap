@@ -54,10 +54,6 @@ scheduler_events = {
 # Page configurations
 # page_js = {"onboarding-flow-trigger": "public/js/onboarding_flow_trigger.js"}
 
-# Reports
-report_script_custom_doctypes = ["StudentStageProgress"]
-
-
 # Includes in <head>
 # ------------------
 
