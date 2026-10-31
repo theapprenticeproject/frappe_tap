@@ -12,3 +12,4 @@ def execute():
                 continue
             prefix = f"{base}-"
             frappe.rename_doc(doctype, name, prefix + getseries(prefix, 3), force=True, rebuild_search=False)
+            frappe.db.commit()
