@@ -164,5 +164,5 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "autoname": "format:{assignment_name}-{###}"
+ "autoname": "format:{assignment_name}-{difficulty_tier}"
 }
