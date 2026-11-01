@@ -14,8 +14,7 @@
  "fields": [
   {
    "fieldname": "skill",
-   "fieldtype": "Link",
-   "options": "Skill",
+   "fieldtype": "Data",
    "label": "Skill"
   },
   {

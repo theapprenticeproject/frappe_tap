@@ -42,9 +42,8 @@
   },
   {
    "fieldname": "skill_name",
-   "fieldtype": "Link",
-   "label": "Skill Name",
-   "options": "Skill"
+   "fieldtype": "Data",
+   "label": "Skill Name"
   },
   {
    "fieldname": "course_vertical",
