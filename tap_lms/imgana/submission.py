@@ -636,7 +636,7 @@ def get_assignment_context(assignment_id, student_id=None):
 
         rubrics = {}
         for grade in assignment.get("rubric_grades") or []:
-            rubric_key = grade.get("rubric_name") or grade.get("skill_name") or "General"
+            rubric_key = grade.get("skill_name") or "General"
             rubrics.setdefault(rubric_key, []).append({
                 "grade_value": grade.get("grade_value"),
                 "grade_name": grade.get("grade_name"),

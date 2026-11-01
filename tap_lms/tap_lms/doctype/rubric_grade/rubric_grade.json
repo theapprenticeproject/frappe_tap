@@ -1,28 +1,19 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:{grade_value}-{skill_name}-{course_vertical}-{course_level}",
+ "autoname": "format:{YYYY}-{#####}",
  "creation": "2026-01-12 00:00:00.000000",
  "default_view": "List",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "rubric_name",
   "grade_value",
   "grade_name",
   "grade_description",
-  "skill_name",
-  "course_vertical",
-  "course_level"
+  "skill_name"
  ],
  "fields": [
-  {
-   "fieldname": "rubric_name",
-   "fieldtype": "Data",
-   "label": "Rubric Name",
-   "read_only": 1
-  },
   {
    "fieldname": "grade_value",
    "fieldtype": "Int",
@@ -44,18 +35,6 @@
    "fieldname": "skill_name",
    "fieldtype": "Data",
    "label": "Skill Name"
-  },
-  {
-   "fieldname": "course_vertical",
-   "fieldtype": "Link",
-   "label": "Course Vertical",
-   "options": "Course Verticals"
-  },
-  {
-   "fieldname": "course_level",
-   "fieldtype": "Link",
-   "label": "Course Level",
-   "options": "Course Level"
   }
  ],
  "index_web_pages_for_search": 1,
