@@ -30,7 +30,11 @@ from tap_lms.onboarding.glific_contact_upload import (
     get_glific_collection as _get_glific_collection,
     move_contacts_and_wait as _move_contacts_and_wait,
 )
-from tap_lms.tap_lms.doctype.student.student import _reserve_next_student_name
+from tap_lms.tap_lms.doctype.student.student import (
+    BLOCKED_BATCH_MESSAGE,
+    _reserve_next_student_name,
+    student_in_blocked_batch,
+)
 
 
 COURSE_SOURCE_SPREADSHEET_ID = "1rtaPJ23KcKfSbt6VY_Lu0HwgAOWwnzOHv5mup7wE3TU"
@@ -293,6 +297,7 @@ def upload_prepared_student_sheet_registration(
         "uploaded_rows": len(success_rows),
         "failed_rows": len(failed_rows),
         "duplicate_rows": len(_duplicate_phone_failure_rows(failed_rows)),
+        "blocked_rows": sum(row.get("message") == BLOCKED_BATCH_MESSAGE for row in failed_rows),
         "failed_rows_file_url": failed_rows_file_url,
         "glific_contact_file_url": glific_contact_file_url,
         "glific_contact_files": glific_contact_files,
@@ -469,6 +474,9 @@ def _append_enrollment_if_missing(student, row: dict) -> None:
     }
     if batch in existing_batches:
         return
+
+    if not student.is_new() and student_in_blocked_batch(student.name):
+        raise frappe.ValidationError(BLOCKED_BATCH_MESSAGE)
 
     student.append("enrollment", {
         "batch": batch,

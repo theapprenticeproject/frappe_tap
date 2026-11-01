@@ -20,7 +20,11 @@ except Exception:
 
     pg_errors = _FallbackPgErrors()
 
-from tap_lms.tap_lms.doctype.student.student import _reserve_next_student_name
+from tap_lms.tap_lms.doctype.student.student import (
+    BLOCKED_BATCH_MESSAGE,
+    _reserve_next_student_name,
+    student_in_blocked_batch,
+)
 from tap_lms.onboarding.utils import (
     _enqueue_glific_contact_sync,
     _get_course_level_label_for_grade,
@@ -462,6 +466,9 @@ def _create_student_web_once(data):
             for enrollment in (student.get("enrollment") or [])
         )
         if not has_matching_enrollment:
+            if existing_student_name and student_in_blocked_batch(student.name):
+                _respond(409, {"status": "failure", "message": BLOCKED_BATCH_MESSAGE})
+                return
             student.append("enrollment", enrollment_row)
 
     if existing_student_name:

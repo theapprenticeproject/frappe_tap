@@ -24,6 +24,7 @@ from tap_lms.onboarding.backend_upload_utils import (
     upload_bytes_to_gcs as _upload_bytes_to_gcs,
     upload_glific_contact_csv as _upload_glific_contact_csv,
 )
+from tap_lms.tap_lms.doctype.student.student import BLOCKED_BATCH_ID
 
 
 # Bench console usage:
@@ -177,6 +178,7 @@ def run_import(
             "inserted_students": 0,
             "inserted_enrollments": 0,
             "skipped_duplicate_enrollments": 0,
+            "blocked_enrollments": 0,
             "batches_processed": 0,
             "effective_rows": total_effective_rows,
             "processed_rows": 0,
@@ -200,6 +202,7 @@ def run_import(
             summary["inserted_students"] += batch_summary["inserted_students"]
             summary["inserted_enrollments"] += batch_summary["inserted_enrollments"]
             summary["skipped_duplicate_enrollments"] += batch_summary["skipped_duplicate_enrollments"]
+            summary["blocked_enrollments"] += batch_summary["blocked_enrollments"]
             summary["batches_processed"] = batch_no
             summary["processed_rows"] = min(offset + batch_summary["batch_rows"], total_effective_rows)
             elapsed = frappe.utils.now_datetime() - started_at
@@ -211,6 +214,7 @@ def run_import(
                 f"inserted_in_batch={batch_summary['inserted_students']} "
                 f"enrollments_in_batch={batch_summary['inserted_enrollments']} "
                 f"duplicate_enrollments_skipped={batch_summary['skipped_duplicate_enrollments']} "
+                f"blocked_enrollments={batch_summary['blocked_enrollments']} "
                 f"processed_total={summary['processed_rows']}/{total_effective_rows} "
                 f"elapsed={elapsed}"
             )
@@ -1255,6 +1259,7 @@ def _execute_import(import_date: date, import_user: str, source_table: str = "tm
         "inserted_students": inserted_count,
         "inserted_enrollments": enrollment_summary["inserted_enrollments"],
         "skipped_duplicate_enrollments": enrollment_summary["skipped_duplicate_enrollments"],
+        "blocked_enrollments": enrollment_summary["blocked_enrollments"],
     }
 
 
@@ -1452,6 +1457,7 @@ def _insert_enrollments(import_date: date, import_user: str) -> dict:
         return {
             "inserted_enrollments": 0,
             "skipped_duplicate_enrollments": 0,
+            "blocked_enrollments": 0,
         }
 
     frappe.db.sql("""
@@ -1470,9 +1476,29 @@ def _insert_enrollments(import_date: date, import_user: str) -> dict:
               AND existing.grade IS NOT DISTINCT FROM r.grade_in
               AND existing.school IS NOT DISTINCT FROM r.school_id
         )
-    """)
+        AND NOT EXISTS (
+            SELECT 1
+            FROM "tabStudent Enrollment" blocked
+            JOIN "tabBatch" bb ON bb.name = blocked.batch
+            WHERE blocked.parent = r.student_id
+              AND blocked.parenttype = 'Student'
+              AND bb.batch_id >= %(blocked_batch_id)s
+        )
+    """, {"blocked_batch_id": BLOCKED_BATCH_ID})
 
     enrollment_rows_to_insert = _scalar("SELECT count(*) FROM tmp_student_import_enrollment_to_insert")
+    blocked_enrollments = _scalar("""
+        SELECT count(*)
+        FROM tmp_student_import_resolved r
+        WHERE EXISTS (
+            SELECT 1
+            FROM "tabStudent Enrollment" blocked
+            JOIN "tabBatch" bb ON bb.name = blocked.batch
+            WHERE blocked.parent = r.student_id
+              AND blocked.parenttype = 'Student'
+              AND bb.batch_id >= %(blocked_batch_id)s
+        )
+    """, {"blocked_batch_id": BLOCKED_BATCH_ID})
 
     frappe.db.sql("""
         INSERT INTO "tabStudent Enrollment" (
@@ -1556,7 +1582,8 @@ def _insert_enrollments(import_date: date, import_user: str) -> dict:
     """)
     return {
         "inserted_enrollments": enrollment_rows_to_insert,
-        "skipped_duplicate_enrollments": total_rows - enrollment_rows_to_insert,
+        "skipped_duplicate_enrollments": total_rows - enrollment_rows_to_insert - blocked_enrollments,
+        "blocked_enrollments": blocked_enrollments,
     }
 
 

@@ -11,9 +11,33 @@ logger.setLevel("INFO")
 PHONE_PATTERN = re.compile(r"^\d{10}$")
 
 
+BLOCKED_BATCH_ID = "BT00000024"
+BLOCKED_BATCH_MESSAGE = f"Student is already enrolled in batch {BLOCKED_BATCH_ID} or later; new enrollment blocked"
+
+
 class Student(Document):
     def autoname(self):
         self.name = _reserve_next_student_name()
+
+    def validate(self):
+        if self.is_new():
+            return
+        saved = set(frappe.db.sql_list(
+            """SELECT name FROM "tabStudent Enrollment" WHERE parent = %s AND parenttype = 'Student'""",
+            self.name,
+        ))
+        if any(row.name not in saved for row in self.enrollment) and student_in_blocked_batch(self.name):
+            frappe.throw(BLOCKED_BATCH_MESSAGE)
+
+
+def student_in_blocked_batch(student_name):
+    return bool(frappe.db.sql("""
+        SELECT 1
+        FROM "tabStudent Enrollment" se
+        JOIN "tabBatch" b ON b.name = se.batch
+        WHERE se.parent = %s AND se.parenttype = 'Student' AND b.batch_id >= %s
+        LIMIT 1
+    """, (student_name, BLOCKED_BATCH_ID)))
 
 
 def _reserve_next_student_name():
