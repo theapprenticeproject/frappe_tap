@@ -238,7 +238,16 @@ class FeedbackConsumer:
                 f"message_student_id={message_data.get('student_id')}, "
                 f"feedback_keys={list((message_data.get('feedback') or {}).keys())}"
             )
-            if self._claim_feedback_flow(submission_id):
+            from tap_lms.imgana.feedback_delivery import is_batch_delivery_enabled
+
+            if is_batch_delivery_enabled():
+                # Feedback is saved; the Glific flow is started by the scheduled
+                # batch (tap_lms.imgana.feedback_delivery, 3pm/4:30pm/9pm IST).
+                frappe.db.commit()
+                frappe.logger().info(
+                    f"Feedback flow deferred to scheduled batch: submission_id={submission_id}"
+                )
+            elif self._claim_feedback_flow(submission_id):
                 frappe.logger().info(
                     f"Feedback flow claim succeeded: submission_id={submission_id}; "
                     "committing claim before Glific trigger"

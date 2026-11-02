@@ -5,8 +5,8 @@ from urllib.parse import urlparse
 import frappe
 
 
-# GLIFIC_FEEDBACK_FLOW_ID = "41749"
-GLIFIC_FEEDBACK_FLOW_ID = ""
+# GLIFIC_FEEDBACK_FLOW_ID = "" ## Remove flow id if Feedback flow is not to be triggered by backend. 
+GLIFIC_FEEDBACK_FLOW_ID = "41954"
 FEEDBACK_PIPELINE_MAX_RETRIES = 5
 FEEDBACK_PIPELINE_RETRY_LOG_TITLE = "Feedback Pipeline Retry"
 FEEDBACK_PIPELINE_DLQ_LOG_TITLE = "Feedback Pipeline DLQ - manual replay required"

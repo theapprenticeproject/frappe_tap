@@ -1,0 +1,48 @@
+{
+ "actions": [],
+ "creation": "2026-10-26 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "enable_batch_delivery",
+  "section_throughput",
+  "calls_per_second",
+  "batch_size",
+  "column_break_1",
+  "job_timeout",
+  "run_stale_hours",
+  "section_retries",
+  "max_attempts",
+  "lease_minutes",
+  "column_break_2",
+  "max_age_days"
+ ],
+ "fields": [
+  {"fieldname": "enable_batch_delivery", "fieldtype": "Check", "label": "Enable Batch Feedback Delivery", "default": "1", "description": "On: feedback is saved immediately but the Glific feedback flow is started only by the scheduled runs (3pm, 4:30pm, and 9pm IST). Off: the consumer starts the flow immediately, as before."},
+  {"fieldname": "section_throughput", "fieldtype": "Section Break", "label": "Throughput"},
+  {"fieldname": "calls_per_second", "fieldtype": "Float", "label": "Glific Calls Per Second", "default": "2", "description": "Applies to every Glific call (contact lookups and flow starts)."},
+  {"fieldname": "batch_size", "fieldtype": "Int", "label": "Submissions Per Page Job", "default": "100"},
+  {"fieldname": "column_break_1", "fieldtype": "Column Break"},
+  {"fieldname": "job_timeout", "fieldtype": "Int", "label": "Page Job Timeout (seconds)", "default": "900"},
+  {"fieldname": "run_stale_hours", "fieldtype": "Int", "label": "Treat Running Run As Stale After (hours)", "default": "3", "description": "A run still marked Running for longer than this no longer blocks a new run."},
+  {"fieldname": "section_retries", "fieldtype": "Section Break", "label": "Retries And Limits"},
+  {"fieldname": "max_attempts", "fieldtype": "Int", "label": "Max Delivery Attempts", "default": "3", "description": "After this many failed attempts a submission is parked for manual replay."},
+  {"fieldname": "lease_minutes", "fieldtype": "Int", "label": "Claim Lease (minutes)", "default": "15", "description": "A claim older than this is treated as abandoned and can be taken again."},
+  {"fieldname": "column_break_2", "fieldtype": "Column Break"},
+  {"fieldname": "max_age_days", "fieldtype": "Int", "label": "Max Submission Age (days)", "default": "7", "description": "Submissions older than this are never sent by the batch."}
+ ],
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-10-26 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Tap Lms",
+ "name": "Feedback Delivery Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "role": "System Manager", "share": 1, "write": 1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

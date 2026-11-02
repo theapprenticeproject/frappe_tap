@@ -1,0 +1,55 @@
+{
+ "actions": [],
+ "creation": "2026-10-13 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "sheet_name",
+  "course",
+  "level",
+  "grade"
+ ],
+ "fields": [
+  {
+   "fieldname": "sheet_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Sheet Tab Name",
+   "reqd": 1
+  },
+  {
+   "description": "Defaults to the sheet tab name",
+   "fieldname": "course",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Course"
+  },
+  {
+   "fieldname": "level",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Level",
+   "options": "\nLevel 0\nLevel 1\nLevel 2\nLevel 2A\nLevel 3\nLevel 3A\nLevel 3K\nLevel 3AK\nLevel 4\nLevel 4K",
+   "reqd": 1
+  },
+  {
+   "fieldname": "grade",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Grade"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-10-13 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Tap Lms",
+ "name": "Learning Unit Import Source Tab",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

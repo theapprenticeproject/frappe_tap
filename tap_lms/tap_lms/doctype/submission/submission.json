@@ -20,6 +20,10 @@
   "feedback_requested_at",
   "feedback_ready_processed_at",
   "feedback_flow_triggered_at",
+  "feedback_delivery_attempts",
+  "feedback_claimed_at",
+  "feedback_delivery_status",
+  "feedback_delivery_error",
   "upload_error_log",
   "result_status",
   "created_at",
@@ -120,6 +124,33 @@
    "fieldname": "feedback_flow_triggered_at",
    "fieldtype": "Datetime",
    "label": "Feedback Flow Triggered At",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "feedback_delivery_attempts",
+   "fieldtype": "Int",
+   "label": "Feedback Delivery Attempts",
+   "default": "0",
+   "read_only": 1
+  },
+  {
+   "fieldname": "feedback_claimed_at",
+   "fieldtype": "Datetime",
+   "label": "Feedback Claimed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "feedback_delivery_status",
+   "fieldtype": "Data",
+   "label": "Feedback Delivery Status",
+   "read_only": 1,
+   "description": "Blank = pending. \"skipped:<reason>\" or \"parked\" = not retried automatically. Clear this and the attempts count to re-queue."
+  },
+  {
+   "fieldname": "feedback_delivery_error",
+   "fieldtype": "Small Text",
+   "label": "Feedback Delivery Error",
    "read_only": 1
   },
   {
@@ -312,7 +343,7 @@
    "fieldname": "submission_validity",
    "fieldtype": "Data",
    "label": "Submission Validity"
-    }
+  }
  ],
  "index_web_pages_for_search": 1,
  "links": [],

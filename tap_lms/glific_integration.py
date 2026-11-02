@@ -111,19 +111,32 @@ def _glific_post_with_401_retry(url, payload, max_attempts=2):
     return last_response  # unreachable but satisfies linters
 
 
+def _to_naive_utc(value):
+    """Normalise a token expiry (str or datetime) to a naive UTC datetime.
+
+    token_expiry_time is always stored as naive UTC. Frappe Datetime fields
+    carry no timezone (Single values come back as strings) and the site runs
+    on IST, so an aware value would lose its offset on a Desk form save and
+    break the comparison. Aware inputs are converted to UTC; naive inputs are
+    assumed to already be UTC.
+    """
+    if isinstance(value, str):
+        value = isoparse(value)
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
 def get_glific_auth_headers():
     settings = get_glific_settings()
-    current_time = datetime.now(timezone.utc)
-    
-    # Convert token_expiry_time to datetime if it's a string
-    if settings.token_expiry_time:
-        if isinstance(settings.token_expiry_time, str):
-            settings.token_expiry_time = isoparse(settings.token_expiry_time)
-        elif settings.token_expiry_time.tzinfo is None:
-            settings.token_expiry_time = settings.token_expiry_time.replace(tzinfo=timezone.utc)
-    
-    if not settings.access_token or not settings.token_expiry_time or \
-       current_time >= settings.token_expiry_time:
+    current_time = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    token_expiry_time = (
+        _to_naive_utc(settings.token_expiry_time) if settings.token_expiry_time else None
+    )
+
+    if not settings.access_token or not token_expiry_time or \
+       current_time >= token_expiry_time:
         # Token is expired or not set, get a new one
         url = f"{settings.api_url}/api/v1/session"
         payload = {
@@ -141,8 +154,8 @@ def get_glific_auth_headers():
         if response.status_code == 200:
             data = response.json()["data"]
 
-            # Parse the token_expiry_time string to a timezone-aware datetime object
-            token_expiry_time = isoparse(data["token_expiry_time"])
+            # Store as naive UTC (see _to_naive_utc)
+            token_expiry_time = _to_naive_utc(data["token_expiry_time"])
             
             # Update the Glific Settings directly in the database
             frappe.db.set_value("Glific Settings", settings.name, {

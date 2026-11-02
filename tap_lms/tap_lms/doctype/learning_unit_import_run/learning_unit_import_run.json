@@ -1,0 +1,178 @@
+{
+ "actions": [],
+ "autoname": "LUIR-.#####",
+ "creation": "2026-10-13 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "status",
+  "column_break_main",
+  "dry_run",
+  "update_existing",
+  "stop_on_first_error",
+  "section_sources",
+  "sources",
+  "section_result",
+  "started_at",
+  "finished_at",
+  "error_message",
+  "column_break_counts",
+  "created_count",
+  "updated_count",
+  "skipped_count",
+  "error_count",
+  "section_results",
+  "results"
+ ],
+ "fields": [
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "no_copy": 1,
+   "options": "Draft\nQueued\nRunning\nCompleted\nCompleted With Errors\nFailed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_main",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "1",
+   "description": "Read the sheets and log what would happen without creating records",
+   "fieldname": "dry_run",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Dry Run"
+  },
+  {
+   "default": "0",
+   "fieldname": "update_existing",
+   "fieldtype": "Check",
+   "label": "Update Existing Records"
+  },
+  {
+   "default": "1",
+   "description": "Stop the current source at its first failed activity, then move on to the next source",
+   "fieldname": "stop_on_first_error",
+   "fieldtype": "Check",
+   "label": "Stop on First Error"
+  },
+  {
+   "fieldname": "section_sources",
+   "fieldtype": "Section Break",
+   "label": "Sources"
+  },
+  {
+   "description": "Sources run in order. A failed source doesn't stop the ones after it.",
+   "fieldname": "sources",
+   "fieldtype": "Table",
+   "label": "Sources",
+   "options": "Learning Unit Import Run Source",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.status!=\"Draft\"",
+   "fieldname": "section_result",
+   "fieldtype": "Section Break",
+   "label": "Result"
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "label": "Started At",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "finished_at",
+   "fieldtype": "Datetime",
+   "label": "Finished At",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "depends_on": "error_message",
+   "fieldname": "error_message",
+   "fieldtype": "Small Text",
+   "label": "Error",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_counts",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "created_count",
+   "fieldtype": "Int",
+   "label": "Created",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "updated_count",
+   "fieldtype": "Int",
+   "label": "Updated",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "skipped_count",
+   "fieldtype": "Int",
+   "label": "Skipped",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "error_count",
+   "fieldtype": "Int",
+   "label": "Errors",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.status!=\"Draft\"",
+   "fieldname": "section_results",
+   "fieldtype": "Section Break",
+   "label": "Activities"
+  },
+  {
+   "fieldname": "results",
+   "fieldtype": "Table",
+   "label": "Results",
+   "no_copy": 1,
+   "options": "Learning Unit Import Run Result",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-10-14 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Tap Lms",
+ "name": "Learning Unit Import Run",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

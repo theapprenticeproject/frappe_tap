@@ -9,8 +9,6 @@ app_description = "Lms system for tap"
 app_email = "tech4dev@gmail.com"
 app_license = "MIT"
 
-before_migrate = "tap_lms.migrate.before_migrate"
-
 
 # Document Events
 doc_events = {
@@ -75,6 +73,23 @@ scheduler_events = {
         # enabled, so this is inert until someone turns it on.
         "0 2 * * *": [
             "tap_lms.teacher_bot.bigquery_sync.sync_submission_images",
+        ],
+        # Student feedback delivery (Glific feedback flow), three times a day.
+        # Cron expressions use the Frappe system timezone (Asia/Kolkata):
+        #   0 15 * * *  — 15:00 IST
+        #   30 16 * * * — 16:30 IST
+        #   0 21 * * *  — 21:00 IST
+        # Feedback is generated continuously; only the Glific flow start is
+        # batched. No-op if "Enable Batch Feedback Delivery" is
+        # unchecked in Feedback Delivery Settings.
+        "0 15 * * *": [
+            "tap_lms.imgana.feedback_delivery.dispatch_1500_ist",
+        ],
+        "30 16 * * *": [
+            "tap_lms.imgana.feedback_delivery.dispatch_1630_ist",
+        ],
+        "0 21 * * *": [
+            "tap_lms.imgana.feedback_delivery.dispatch_2100_ist",
         ],
         "30 20 * * *": [
             "tap_lms.tap_lms.doctype.student_sheet_registration_job."

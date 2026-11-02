@@ -12,3 +12,4 @@ tap_lms.patches.cr_004_onboarding_throughput.add_onboarding_indexes
 tap_lms.patches.br_003.sp_doctypes_hash_autoname
 tap_lms.patches.cr_2026_06_19.enrollment_hash_autoname
 tap_lms.patches.v0_3.submission_feedback_flow_id
+tap_lms.patches.save_feedback_delivery_settings

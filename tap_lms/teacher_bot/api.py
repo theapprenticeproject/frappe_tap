@@ -106,6 +106,7 @@ def save_course_grade():
         submission_id  required, the value returned by start_submission
         course         required, a Course Verticals name e.g. "Arts"
         grade          required, "1".."12"
+        section        required, free text e.g. "A"
 
     Safe to call twice with the same values: it overwrites rather than erroring,
     because Glific retries webhooks.
@@ -123,8 +124,9 @@ def save_course_grade():
 
         course = str(data.get("course") or "").strip()
         grade = str(data.get("grade") or "").strip()
-        if not course or not grade:
-            _respond(400, {"status": "failure", "message": "course and grade are required"})
+        section = str(data.get("section") or "").strip()
+        if not course or not grade or not section:
+            _respond(400, {"status": "failure", "message": "course, grade and section are required"})
             return
 
         if not frappe.db.exists("Course Verticals", course):
@@ -142,6 +144,7 @@ def save_course_grade():
         doc = frappe.get_doc("Teacher Submission", submission_id)
         doc.course = course
         doc.grade = grade
+        doc.section = section
         doc.status = "Details Added"
         doc.save(ignore_permissions=True)
         frappe.db.commit()

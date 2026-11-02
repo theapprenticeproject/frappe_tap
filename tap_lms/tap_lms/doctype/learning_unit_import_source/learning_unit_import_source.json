@@ -1,0 +1,193 @@
+{
+ "actions": [],
+ "autoname": "field:source_name",
+ "creation": "2026-10-13 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "source_name",
+  "source_type",
+  "gcs_settings",
+  "column_break_main",
+  "course_level_program",
+  "unit_match_mode",
+  "section_source",
+  "spreadsheet_url",
+  "master_sheet_name",
+  "source_vertical",
+  "source_tabs",
+  "section_assignment_flow",
+  "assignment_flow_spreadsheet_url",
+  "assignment_flow_sheet_name",
+  "section_defaults",
+  "difficulty_tier",
+  "default_status",
+  "column_break_defaults",
+  "link_learning_units_to_course_level"
+ ],
+ "fields": [
+  {
+   "fieldname": "source_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Source Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "Master Index",
+   "description": "Master Index: a sheet listing vertical / course / level / activity sheet link. Source Tabs: one spreadsheet whose tabs are listed below.",
+   "fieldname": "source_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Source Type",
+   "options": "Master Index\nSource Tabs",
+   "reqd": 1
+  },
+  {
+   "description": "The service account must have view access to the source sheets and edit access to the assignment flow sheet",
+   "fieldname": "gcs_settings",
+   "fieldtype": "Link",
+   "label": "Google Credentials (GCS Settings)",
+   "options": "GCS Settings",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_main",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "course_level_program",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Course Level Program",
+   "options": "Program",
+   "reqd": 1
+  },
+  {
+   "default": "Exact",
+   "description": "How run unit filters are matched against column A: exactly, or as a prefix",
+   "fieldname": "unit_match_mode",
+   "fieldtype": "Select",
+   "label": "Unit Match Mode",
+   "options": "Exact\nPrefix"
+  },
+  {
+   "fieldname": "section_source",
+   "fieldtype": "Section Break",
+   "label": "Source Sheet"
+  },
+  {
+   "fieldname": "spreadsheet_url",
+   "fieldtype": "Data",
+   "label": "Spreadsheet URL",
+   "options": "URL",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.source_type==\"Master Index\"",
+   "description": "Used when the URL has no gid",
+   "fieldname": "master_sheet_name",
+   "fieldtype": "Data",
+   "label": "Master Sheet Tab"
+  },
+  {
+   "depends_on": "eval:doc.source_type==\"Source Tabs\"",
+   "fieldname": "source_vertical",
+   "fieldtype": "Select",
+   "label": "Vertical",
+   "mandatory_depends_on": "eval:doc.source_type==\"Source Tabs\"",
+   "options": "\nSTEM-Coding\nSTEM-Science\nVA\nFin-Lit"
+  },
+  {
+   "depends_on": "eval:doc.source_type==\"Source Tabs\"",
+   "fieldname": "source_tabs",
+   "fieldtype": "Table",
+   "label": "Source Tabs",
+   "options": "Learning Unit Import Source Tab"
+  },
+  {
+   "description": "Assignment IDs are merged into this sheet, keyed by course + level (Master Index) or course + grade (Source Tabs)",
+   "fieldname": "section_assignment_flow",
+   "fieldtype": "Section Break",
+   "label": "Assignment Flow Sheet"
+  },
+  {
+   "fieldname": "assignment_flow_spreadsheet_url",
+   "fieldtype": "Data",
+   "label": "Assignment Flow Sheet URL",
+   "options": "URL"
+  },
+  {
+   "description": "Used when the URL has no gid",
+   "fieldname": "assignment_flow_sheet_name",
+   "fieldtype": "Data",
+   "label": "Assignment Flow Sheet Tab"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_defaults",
+   "fieldtype": "Section Break",
+   "label": "Defaults"
+  },
+  {
+   "default": "Basic",
+   "fieldname": "difficulty_tier",
+   "fieldtype": "Select",
+   "label": "Difficulty Tier",
+   "options": "Remedial\nBasic\nIntermediate\nAdvanced",
+   "reqd": 1
+  },
+  {
+   "default": "Published",
+   "fieldname": "default_status",
+   "fieldtype": "Select",
+   "label": "Learning Unit / Quiz Status",
+   "options": "Draft\nPublished\nArchived",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_defaults",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "1",
+   "fieldname": "link_learning_units_to_course_level",
+   "fieldtype": "Check",
+   "label": "Link Learning Units to Course Level"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [
+  {
+   "link_doctype": "Learning Unit Import Run",
+   "link_fieldname": "source"
+  }
+ ],
+ "modified": "2026-10-13 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Tap Lms",
+ "name": "Learning Unit Import Source",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "source_name",
+ "track_changes": 1
+}
