@@ -79,6 +79,7 @@ def _get_submissions(doc, assignment_ids):
 		"""
 		SELECT s.name FROM `tabSubmission` s
 		WHERE s.assign_id IN %(assignment_ids)s
+		  AND (IFNULL(s.submission_text, '') != '' OR IFNULL(s.submission_url, '') != '')
 		  AND EXISTS (
 			SELECT 1 FROM `tabStudent Enrollment` e
 			WHERE e.parenttype = 'Student' AND e.parent = s.student_id AND e.batch = %(batch)s
