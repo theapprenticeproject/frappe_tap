@@ -1,0 +1,31 @@
+{
+ "actions": [],
+ "creation": "2026-11-01 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "vertical"
+ ],
+ "fields": [
+  {
+   "fieldname": "vertical",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Vertical",
+   "reqd": 1,
+   "options": "STEM-Coding\nSTEM-Science\nVA\nFin-Lit"
+  }
+ ],
+ "links": [],
+ "modified": "2026-11-01 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Tap Lms",
+ "name": "On Demand Evaluation Vertical",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "istable": 1,
+ "editable_grid": 1
+}

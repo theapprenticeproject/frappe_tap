@@ -54,6 +54,9 @@
   "feedback_details_column_break",
   "rubric_section",
   "rubric_evaluations",
+  "rubric_eval_status",
+  "rubric_eval_job",
+  "failure_reason",
   "plagiarism_section",
   "plagiarism_status",
   "is_plagiarized",
@@ -402,11 +405,29 @@
   {
    "fieldname": "language_column_break",
    "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "rubric_eval_status",
+   "fieldtype": "Select",
+   "label": "Rubric Eval Status",
+   "options": "\nProcessing\nCompleted\nFailed"
+  },
+  {
+   "fieldname": "rubric_eval_job",
+   "fieldtype": "Link",
+   "label": "Rubric Eval Job",
+   "options": "On Demand Evaluation"
+  },
+  {
+   "fieldname": "failure_reason",
+   "fieldtype": "Small Text",
+   "label": "Failure Reason",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-12 00:00:00.000000",
+ "modified": "2026-11-02 13:00:00.000000",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Submission",

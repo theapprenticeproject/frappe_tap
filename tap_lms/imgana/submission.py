@@ -445,7 +445,7 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
         raise
 
 
-def enqueue_submission(submission_id, retry_count=0):
+def enqueue_submission(submission_id, retry_count=0, eval_type=None):
     try:
         import pika
 
@@ -465,6 +465,8 @@ def enqueue_submission(submission_id, retry_count=0):
             "is_primary": getattr(submission_doc, "is_primary", 1),
             "created_at": str(getattr(submission_doc, "created_at", submission_doc.creation)),
         }
+        if eval_type:
+            payload["eval_type"] = eval_type
 
         rabbitmq_config = get_rabbitmq_settings()
         frappe.logger("submission").info(
@@ -558,6 +560,7 @@ def enqueue_submission(submission_id, retry_count=0):
                     timeout=120,
                     submission_id=submission_id,
                     retry_count=retry_count,
+                    eval_type=eval_type,
                 )
                 frappe.logger("submission").info(
                     f"RabbitMQ retry job queued: submission_id={submission_id}, "
@@ -589,6 +592,8 @@ def enqueue_submission(submission_id, retry_count=0):
                 f"student_id={student_id or 'unknown'}, retries_attempted={retry_count}, "
                 f"error={str(exc)}"
             )
+            if eval_type:
+                frappe.db.set_value("Submission", submission_id, "rubric_eval_status", "Failed")
             frappe.log_error(
                 title=FEEDBACK_PIPELINE_DLQ_LOG_TITLE,
                 message=json.dumps(

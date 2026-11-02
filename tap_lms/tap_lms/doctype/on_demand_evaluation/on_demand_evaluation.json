@@ -1,0 +1,117 @@
+{
+ "actions": [],
+ "creation": "2026-11-01 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "program",
+  "unit_activity_no",
+  "verticals",
+  "test_limit",
+  "status_section",
+  "status",
+  "total_submissions",
+  "output_file_url",
+  "status_column_break",
+  "queued_at",
+  "completed_at"
+ ],
+ "fields": [
+  {
+   "fieldname": "program",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Program",
+   "options": "Program",
+   "reqd": 1
+  },
+  {
+   "fieldname": "unit_activity_no",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Unit & Activity No.",
+   "reqd": 1
+  },
+  {
+   "description": "Leave empty to include all verticals in the sheet.",
+   "fieldname": "verticals",
+   "fieldtype": "Table",
+   "label": "Verticals",
+   "options": "On Demand Evaluation Vertical"
+  },
+  {
+   "fieldname": "status_section",
+   "fieldtype": "Section Break",
+   "label": "Status"
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Draft\nQueued\nCompleted",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_submissions",
+   "fieldtype": "Int",
+   "label": "Total Submissions",
+   "read_only": 1
+  },
+  {
+   "fieldname": "output_file_url",
+   "fieldtype": "Data",
+   "label": "Output File URL",
+   "options": "URL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "status_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "queued_at",
+   "fieldtype": "Datetime",
+   "label": "Queued At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completed_at",
+   "fieldtype": "Datetime",
+   "label": "Completed At",
+   "read_only": 1
+  },
+  {
+   "description": "Testing only: queue at most this many submissions. Leave empty to queue all.",
+   "fieldname": "test_limit",
+   "fieldtype": "Int",
+   "label": "Test Limit"
+  }
+ ],
+ "links": [],
+ "modified": "2026-11-02 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Tap Lms",
+ "name": "On Demand Evaluation",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "autoname": "format:ODE-{#####}",
+ "naming_rule": "Expression"
+}

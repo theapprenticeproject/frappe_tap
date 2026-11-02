@@ -1,12 +1,24 @@
 ##git
 import json
 import os
+import re
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 import frappe
 from tap_lms.feedback_handler.audio_creation import generate_feedback_audio
 
 _STOCK_FEEDBACK_CACHE: Optional[Dict[str, Any]] = None
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _strip_control_chars(value: Any) -> Any:
+    if isinstance(value, str):
+        return _CONTROL_CHARS.sub("", value)
+    if isinstance(value, list):
+        return [_strip_control_chars(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _strip_control_chars(v) for k, v in value.items()}
+    return value
 
 
 def _load_stock_feedback_data() -> Dict[str, Any]:
@@ -102,37 +114,13 @@ class FeedbackProcessor:
         if not frappe.db.exists("Submission", submission_id):
             raise ValueError(f"Submission {submission_id} not found")
 
-    def is_retryable_error(self, error: Exception) -> bool:
-        error_str = str(error).lower()
-
-        non_retryable_patterns = [
-            "does not exist",
-            "not found",
-            "invalid",
-            "permission denied",
-            "duplicate",
-            "constraint violation",
-            "missing submission_id",
-            "missing feedback data",
-            "validation error",
-        ]
-
-        return not any(pattern in error_str for pattern in non_retryable_patterns)
-
     def mark_submission_failed(self, submission_id: str, error_message: str) -> None:
-        try:
-            submission = frappe.get_doc("Submission", submission_id)
-            submission.status = "Failed"
-
-            if hasattr(submission, "error_message"):
-                submission.error_message = error_message[:500]
-
-            submission.save(ignore_permissions=True)
-            frappe.logger().error(f"Marked submission {submission_id} as failed: {error_message}")
-        except Exception as e:
-            frappe.logger().error(
-                f"Error marking submission {submission_id} as failed: {str(e)}"
-            )
+        # set_value skips validation, so bad feedback data cannot block marking the failure.
+        frappe.db.set_value(
+            "Submission",
+            submission_id,
+            {"status": "Failed", "failure_reason": error_message[:500]},
+        )
 
     def _use_stock(self, key, reason, translation_language):
         frappe.logger().info(f"Using stock audio feedback for submission due to {reason}.")
@@ -141,7 +129,7 @@ class FeedbackProcessor:
 
     def update_submission(self, message_data: Dict[str, Any]) -> None:
         submission_id = message_data["submission_id"]
-        feedback_data = message_data.get("feedback", {})
+        feedback_data = _strip_control_chars(message_data.get("feedback", {}))
         plagiarism_data = feedback_data.get("plagiarism_output", {})
 
         submission = frappe.get_doc("Submission", submission_id)
@@ -255,10 +243,12 @@ class FeedbackProcessor:
             "translation_language": translation_language,
             "audio_feedback_url": audio_feedback_url,
             "generated_feedback": json.dumps(feedback_data, indent=2, ensure_ascii=False),
-            # Child table field
-            "rubric_evaluations": rubric_evaluations_rows,
             "plagiarism_result": message_data.get("plagiarism_score", 0),
         }
+        # Only replace the child table when this result has rubric rows, so rows
+        # saved by On Demand Evaluation jobs are kept.
+        if rubric_evaluations_rows:
+            update_data["rubric_evaluations"] = rubric_evaluations_rows
 
         submission.update(update_data)
         submission.save(ignore_permissions=True)
@@ -292,8 +282,11 @@ class FeedbackProcessor:
             return "Original"
 
 
-    def _extract_grade(self, feedback_data: Dict[str, Any], submission_id: str) -> float:
-        grade_recommendation: Any = feedback_data.get("final_grade", "50")
+    def _extract_grade(self, feedback_data: Dict[str, Any], submission_id: str) -> Optional[float]:
+        grade_recommendation: Any = feedback_data.get("final_grade")
+        if grade_recommendation is None:
+            # Kaapi feedback runs return no grade.
+            return None
 
         try:
             if isinstance(grade_recommendation, str):

@@ -47,6 +47,10 @@ scheduler_events = {
             "tap_lms.tap_lms.doctype.student_sheet_registration_job."
             "student_sheet_registration_job.enqueue_daily_student_sheet_registration",
         ],
+        # On Demand Evaluation: complete Queued jobs and upload their CSV.
+        "0 */3 * * *": [
+            "tap_lms.tap_lms.doctype.on_demand_evaluation.on_demand_evaluation.check_queued_evaluations",
+        ],
     },
 
 }

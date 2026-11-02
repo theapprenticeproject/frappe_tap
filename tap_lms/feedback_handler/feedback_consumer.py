@@ -8,7 +8,9 @@ from typing import Dict
 
 from ..utils.glific_integration import start_contact_flow
 from .feedback_processor import FeedbackProcessor
+from .rubric_eval_processor import mark_rubric_eval_failed, process_rubric_evaluation
 
+MAX_ATTEMPTS = 3
 GLIFIC_FEEDBACK_FLOW_ID = "34108"
 DEMO_GLIFIC_COMMENT_SOURCE = "demo_submission"
 DEMO_GLIFIC_COMMENT_TYPE = "feedback_glific_contact"
@@ -206,6 +208,24 @@ class FeedbackConsumer:
                 ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
                 return
 
+            if message_data.get("eval_type") == "rubric":
+                process_rubric_evaluation(message_data)
+                frappe.db.commit()
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                return
+
+            if message_data.get("status") == "Failed":
+                # Failed on RAG: no feedback is saved and the student gets no
+                # feedback flow (the skipped status keeps the scheduled batch away).
+                frappe.db.set_value("Submission", submission_id, {
+                    "status": "Failed",
+                    "feedback_delivery_status": "skipped:rag_failed",
+                    "failure_reason": message_data["feedback"].get("error_message"),
+                })
+                frappe.db.commit()
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                return
+
             # Process the message and commit before the SP transition and
             # external flow. Glific may immediately call back into our public
             # APIs; if this transaction is still open, those APIs only see the
@@ -301,15 +321,28 @@ class FeedbackConsumer:
                 # Never let logging failure mask the original error handling.
                 frappe.db.rollback()
 
-            # Determine if error is retryable
-            if self.processor.is_retryable_error(e):
-                frappe.logger().warning(f"Retryable error for submission {submission_id}, will retry")
-                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            attempts = ((properties.headers or {}).get("attempts") or 0) + 1
+            if attempts < MAX_ATTEMPTS:
+                # Republish to the back of the queue so a failing message
+                # does not block the ones behind it.
+                frappe.logger().warning(
+                    f"Attempt {attempts}/{MAX_ATTEMPTS} failed for submission {submission_id}, republishing"
+                )
+                ch.basic_publish(
+                    exchange="",
+                    routing_key=self.settings.feedback_results_queue,
+                    body=body,
+                    properties=pika.BasicProperties(delivery_mode=2, headers={"attempts": attempts}),
+                )
+                ch.basic_ack(delivery_tag=method.delivery_tag)
             else:
-                frappe.logger().error(f"Non-retryable error for submission {submission_id}, rejecting message")
-                # Mark submission as failed and reject message
+                frappe.logger().error(
+                    f"Submission {submission_id} failed {MAX_ATTEMPTS} times, rejecting message"
+                )
                 try:
-                    if submission_id:
+                    if submission_id and message_data.get("eval_type") == "rubric":
+                        mark_rubric_eval_failed(submission_id)
+                    elif submission_id:
                         self.processor.mark_submission_failed(submission_id, error_msg)
                         frappe.db.commit()
                 except:
