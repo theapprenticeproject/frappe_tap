@@ -5,6 +5,7 @@
  "engine": "InnoDB",
  "field_order": [
   "program",
+  "batch",
   "unit_activity_no",
   "verticals",
   "test_limit",
@@ -23,6 +24,15 @@
    "in_list_view": 1,
    "label": "Program",
    "options": "Program",
+   "reqd": 1
+  },
+  {
+   "description": "Only students enrolled in this batch are considered.",
+   "fieldname": "batch",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Batch",
+   "options": "Batch",
    "reqd": 1
   },
   {

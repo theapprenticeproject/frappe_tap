@@ -1,11 +1,35 @@
+const METHOD = "tap_lms.tap_lms.doctype.on_demand_evaluation.on_demand_evaluation";
+
 frappe.ui.form.on("On Demand Evaluation", {
+    setup(frm) {
+        frm.set_query("batch", () => ({ filters: { program: frm.doc.program } }));
+    },
     refresh(frm) {
         if (frm.is_new() || frm.doc.status !== "Draft") {
             return;
         }
+        frm.add_custom_button(__("Count Assignments & Submissions"), async () => {
+            if (frm.is_dirty()) {
+                await frm.save();
+            }
+            frappe.call({
+                method: `${METHOD}.count_evaluations`,
+                args: { docname: frm.doc.name },
+                freeze: true,
+                freeze_message: __("Counting..."),
+                callback({ message }) {
+                    frappe.msgprint(
+                        __("Assignments found: {0}<br>Submissions that will be queued: {1}", [
+                            message.assignments,
+                            message.submissions,
+                        ])
+                    );
+                },
+            });
+        });
         frm.add_custom_button(__("Queue Evaluations"), () => {
             frappe.call({
-                method: "tap_lms.tap_lms.doctype.on_demand_evaluation.on_demand_evaluation.queue_evaluations",
+                method: `${METHOD}.queue_evaluations`,
                 args: { docname: frm.doc.name },
                 freeze: true,
                 callback() {

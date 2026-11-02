@@ -43,25 +43,9 @@ def run_queue_evaluations(docname):
 	if not assignment_ids:
 		frappe.throw(f"No assignments found in the sheet for {doc.program} / {doc.unit_activity_no}.")
 
-	batch = frappe.db.get_value("Batch", {"program": doc.program})
-	if not batch:
-		frappe.throw(f"No Batch found for program {doc.program}.")
-
-	submissions = frappe.db.sql_list(
-		"""
-		SELECT s.name FROM `tabSubmission` s
-		WHERE s.assign_id IN %(assignment_ids)s
-		  AND EXISTS (
-			SELECT 1 FROM `tabStudent Enrollment` e
-			WHERE e.parenttype = 'Student' AND e.parent = s.student_id AND e.batch = %(batch)s
-		  )
-		""",
-		{"assignment_ids": tuple(assignment_ids), "batch": batch},
-	)
+	submissions = _get_submissions(doc, assignment_ids)
 	if not submissions:
-		frappe.throw(f"No submissions found for batch {batch} and assignments {sorted(assignment_ids)}.")
-	if doc.test_limit:
-		submissions = submissions[: doc.test_limit]
+		frappe.throw(f"No submissions found for batch {doc.batch} and assignments {sorted(assignment_ids)}.")
 
 	# Commit the job link before publishing so results can never arrive ahead of it.
 	frappe.db.sql(
@@ -74,6 +58,30 @@ def run_queue_evaluations(docname):
 
 	for name in submissions:
 		enqueue_submission(name, eval_type="rubric")
+
+
+@frappe.whitelist()
+def count_evaluations(docname):
+	doc = frappe.get_doc("On Demand Evaluation", docname)
+	assignment_ids = _get_assignment_ids(doc)
+	return {"assignments": len(assignment_ids), "submissions": len(_get_submissions(doc, assignment_ids))}
+
+
+def _get_submissions(doc, assignment_ids):
+	if not assignment_ids:
+		return []
+	submissions = frappe.db.sql_list(
+		"""
+		SELECT s.name FROM `tabSubmission` s
+		WHERE s.assign_id IN %(assignment_ids)s
+		  AND EXISTS (
+			SELECT 1 FROM `tabStudent Enrollment` e
+			WHERE e.parenttype = 'Student' AND e.parent = s.student_id AND e.batch = %(batch)s
+		  )
+		""",
+		{"assignment_ids": tuple(assignment_ids), "batch": doc.batch},
+	)
+	return submissions[: doc.test_limit] if doc.test_limit else submissions
 
 
 def _get_assignment_ids(doc):
