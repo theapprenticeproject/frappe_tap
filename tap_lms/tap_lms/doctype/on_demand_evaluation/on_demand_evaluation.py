@@ -45,7 +45,7 @@ def run_queue_evaluations(docname):
 
 	submissions = _get_submissions(doc, assignment_ids)
 	if not submissions:
-		frappe.throw(f"No submissions found for batch {doc.batch} and assignments {sorted(assignment_ids)}.")
+		frappe.throw(f"No submissions found for batch {doc.batch} and assignments {sorted(set(assignment_ids))}.")
 
 	# Commit the job link before publishing so results can never arrive ahead of it.
 	frappe.db.sql(
@@ -53,7 +53,7 @@ def run_queue_evaluations(docname):
 		WHERE name IN %s""",
 		(docname, tuple(submissions)),
 	)
-	doc.db_set({"status": "Queued", "total_submissions": len(submissions), "queued_at": now_datetime()})
+	doc.db_set({"status": "Queued", "total_assignments": len(assignment_ids), "total_submissions": len(submissions), "queued_at": now_datetime()})
 	frappe.db.commit()
 
 	for name in submissions:
@@ -64,7 +64,12 @@ def run_queue_evaluations(docname):
 def count_evaluations(docname):
 	doc = frappe.get_doc("On Demand Evaluation", docname)
 	assignment_ids = _get_assignment_ids(doc)
-	return {"assignments": len(assignment_ids), "submissions": len(_get_submissions(doc, assignment_ids))}
+	counts = {
+		"total_assignments": len(assignment_ids),
+		"total_submissions": len(_get_submissions(doc, assignment_ids)),
+	}
+	doc.db_set(counts)
+	return counts
 
 
 def _get_submissions(doc, assignment_ids):
@@ -103,7 +108,7 @@ def _get_assignment_ids(doc):
 
 	unit_activity_no = _normalize(doc.unit_activity_no)
 	program = _normalize(doc.program)
-	assignment_ids = set()
+	assignment_ids = []
 	for value_range in data["valueRanges"]:
 		header, *rows = value_range.get("values") or [[]]
 		unit_col = header.index("Unit & Activity No.")
@@ -112,7 +117,7 @@ def _get_assignment_ids(doc):
 		for row in rows:
 			row = row + [""] * (len(header) - len(row))
 			if _normalize(row[unit_col]) == unit_activity_no and _normalize(row[program_col]) == program:
-				assignment_ids.update(a.strip() for a in row[assignment_col].split(",") if a.strip())
+				assignment_ids.extend(a.strip() for a in row[assignment_col].split(",") if a.strip())
 	return assignment_ids
 
 

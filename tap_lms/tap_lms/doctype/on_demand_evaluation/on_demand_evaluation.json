@@ -11,6 +11,7 @@
   "test_limit",
   "status_section",
   "status",
+  "total_assignments",
   "total_submissions",
   "output_file_url",
   "status_column_break",
@@ -61,6 +62,12 @@
    "in_list_view": 1,
    "label": "Status",
    "options": "Draft\nQueued\nCompleted",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_assignments",
+   "fieldtype": "Int",
+   "label": "Total Assignments",
    "read_only": 1
   },
   {

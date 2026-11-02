@@ -1,9 +1,6 @@
 const METHOD = "tap_lms.tap_lms.doctype.on_demand_evaluation.on_demand_evaluation";
 
 frappe.ui.form.on("On Demand Evaluation", {
-    setup(frm) {
-        frm.set_query("batch", () => ({ filters: { program: frm.doc.program } }));
-    },
     refresh(frm) {
         if (frm.is_new() || frm.doc.status !== "Draft") {
             return;
@@ -18,10 +15,11 @@ frappe.ui.form.on("On Demand Evaluation", {
                 freeze: true,
                 freeze_message: __("Counting..."),
                 callback({ message }) {
+                    frm.reload_doc();
                     frappe.msgprint(
                         __("Assignments found: {0}<br>Submissions that will be queued: {1}", [
-                            message.assignments,
-                            message.submissions,
+                            message.total_assignments,
+                            message.total_submissions,
                         ])
                     );
                 },
