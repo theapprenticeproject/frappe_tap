@@ -4,7 +4,6 @@ import os
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 import frappe
-from tap_lms.feedback_handler.audio_creation import generate_feedback_audio
 
 _STOCK_FEEDBACK_CACHE: Optional[Dict[str, Any]] = None
 
@@ -211,31 +210,21 @@ class FeedbackProcessor:
         elif "submission does not match assignment requirements" in overall_feedback_translated.lower():
             overall_feedback_translated, audio_feedback_url = self._use_stock("requirements_mismatch", "requirements mismatch in feedback", translation_language)
 
-        # Creating TTS for valid submissions and feedback.
+        # Audio is now generated upstream by rag_service's RunPod TTS batch
+        # pipeline. By the time this message reaches the consumer,
+        # audio_feedback_url is already populated (or empty string) by
+        # rag_service's release_to_lms_if_ready() before it was queued.
         else:
-            try:
-                overall_feedback_translated = feedback_data.get("overall_feedback_translated", "")
+            audio_feedback_url = (feedback_data.get("audio_feedback_url") or "").strip()
+            if audio_feedback_url:
                 frappe.logger().info(
-                    f"Generating audio feedback for submission {submission_id} "
-                    f"in language {translation_language}"
+                    f"Using upstream TTS audio feedback for submission {submission_id}: {audio_feedback_url}"
                 )
-
-                audio_feedback_url = generate_feedback_audio(
-                    text=overall_feedback_translated,
-                    language_name=translation_language,
-                    submission_id=submission_id,
-                    tone=None
-                )
-
+            else:
                 frappe.logger().info(
-                    f"Audio feedback generated successfully for submission {submission_id}: {audio_feedback_url}"
+                    f"No audio_feedback_url in payload for submission {submission_id}; "
+                    f"continuing without audio (upstream TTS was Not Applicable or Failed)."
                 )
-            except Exception as e:
-                frappe.logger().error(
-                    f"Failed to generate audio feedback for submission {submission_id}: {str(e)}"
-                )
-                # Continue without audio - don't fail the entire submission update
-                audio_feedback_url = "Null"
 
         if not audio_feedback_url:
             audio_feedback_url = "Null"
