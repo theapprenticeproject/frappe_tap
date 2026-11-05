@@ -1,3 +1,12 @@
+"""
+Teacher Stats Poster.
+
+Pulls per-school engagement stats from BigQuery, enriches each row with
+school/district/state names from the LMS (Frappe is the source of truth
+for names — BigQuery only supplies the school_id key), and pushes the
+result to a Google Apps Script Web App that writes it into a Sheet.
+"""
+
 import json
 import re
 
@@ -19,8 +28,13 @@ WEBAPP_TIMEOUT_SECONDS = 60
 
 DEFAULT_MAX_BYTES_BILLED_GB = 10
 
+# How long a "RUNNING" run is trusted before it's treated as stale and
+# a new run is allowed to start. Protects against overlapping triggers
+# without needing an external lock store (e.g. Redis).
 LOCK_STALE_MINUTES = 10
 
+# Loose sanity check for a school_id coming from BigQuery free text —
+# rejects multi-line/garbage values before they ever hit a DB filter.
 _PLAUSIBLE_SCHOOL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,39}$")
 
 
@@ -33,6 +47,7 @@ def _looks_like_school_id(value):
 
 
 def get_poster_settings():
+    """Load and normalise the BigQuery Settings singleton into a plain dict."""
     settings = frappe.get_single(SETTINGS_DOCTYPE)
     return frappe._dict({
         "enabled": cint(settings.get("tsp_enabled")),
@@ -63,6 +78,7 @@ def get_poster_settings():
 
 
 def _resolve_date_window(poster_settings):
+    """Translate the configured filter mode into a concrete (start, end) window."""
     mode = poster_settings.date_filter_mode
     if mode not in DATE_FILTER_MODES:
         mode = "All"
@@ -99,6 +115,7 @@ def _required_fields_ok(poster_settings):
 
 
 def get_bq_client(poster_settings):
+    """Build an authenticated BigQuery client from the stored service account JSON."""
     from google.cloud import bigquery
     from google.oauth2 import service_account
 
@@ -112,6 +129,9 @@ def get_bq_client(poster_settings):
     return bigquery.Client(project=poster_settings.project_id, credentials=credentials)
 
 
+# Read-only aggregation query. Returns one row per school_id with
+# registration/engagement counts; names are intentionally NOT trusted
+# from here — they are re-resolved from the LMS afterwards.
 QUERY_TEMPLATE = """
 WITH distinct_contacts AS (
     SELECT
@@ -176,6 +196,7 @@ _DATE_CLAUSE = "AND inserted_at BETWEEN @window_start AND @window_end"
 
 
 def fetch_rows(poster_settings, client=None):
+    """Run the BigQuery aggregation query and return the result rows."""
     from google.cloud import bigquery
 
     client = client or get_bq_client(poster_settings)
@@ -216,9 +237,23 @@ def fetch_rows(poster_settings, client=None):
     return list(client.query(query, job_config=job_config).result())
 
 
-def resolve_districts(school_ids):
+def resolve_school_info(school_ids):
+    """
+    Resolve school/district/state names from the LMS for a list of
+    BigQuery school_id values.
+
+    School.keyword (not School.name, which is auto-generated) is the
+    field that matches BigQuery's school_id, so lookups are keyed on it.
+    State is taken from School.state when set, otherwise falls back to
+    the state linked on the school's District.
+
+    Returns (info_by_id, missing) where info_by_id maps school_id to a
+    dict of {school_name, district_name, state_name}, and missing lists
+    every school_id that couldn't be fully resolved, with a reason.
+    """
     missing = []
 
+    # Filter out obviously malformed ids before querying the DB.
     safe_ids = []
     for school_id in sorted({sid for sid in school_ids if sid}):
         if _looks_like_school_id(school_id):
@@ -233,53 +268,86 @@ def resolve_districts(school_ids):
         schools = frappe.db.get_all(
             "School",
             filters={"keyword": ["in", safe_ids]},
-            fields=["keyword", "district"],
+            fields=["keyword", "name1", "district", "state"],
         )
     except Exception:
         frappe.db.rollback()
-        frappe.log_error(frappe.get_traceback(), "teacher_stats_poster: district lookup failed")
+        frappe.log_error(frappe.get_traceback(), "teacher_stats_poster: school lookup failed")
         for school_id in safe_ids:
-            missing.append({"school_id": school_id, "reason": "district_unresolved"})
+            missing.append({"school_id": school_id, "reason": "school_unresolved"})
         return {}, missing
 
     school_by_id = {row.keyword: row for row in schools}
 
+    # Pre-fetch districts referenced by the matched schools, to validate
+    # the Link and to fall back to District.state when School.state is empty.
     district_ids = sorted({row.district for row in schools if row.district})
-    valid_district_ids = set()
+    district_rows = []
     if district_ids:
         try:
-            valid_district_ids = {
-                row.name for row in frappe.db.get_all(
-                    "District", filters={"name": ["in", district_ids]}, fields=["name"]
-                )
-            }
+            district_rows = frappe.db.get_all(
+                "District",
+                filters={"name": ["in", district_ids]},
+                fields=["name", "state"],
+            )
         except Exception:
             frappe.db.rollback()
-            frappe.log_error(frappe.get_traceback(), "teacher_stats_poster: district validity check failed")
-            valid_district_ids = set()
+            frappe.log_error(frappe.get_traceback(), "teacher_stats_poster: district lookup failed")
+            district_rows = []
 
-    district_by_id = {}
+    valid_district_ids = {row.name for row in district_rows}
+    state_by_district = {row.name: row.state for row in district_rows if row.state}
+
+    info_by_id = {}
     for school_id in safe_ids:
         school = school_by_id.get(school_id)
         if not school:
             missing.append({"school_id": school_id, "reason": "no_school_record"})
             continue
+
+        school_name = (school.name1 or "").strip()
+        if not school_name:
+            missing.append({"school_id": school_id, "reason": "name_missing_in_lms"})
+
+        district_name = ""
+        state_name = (school.state or "").strip()
+
         if not school.district:
             missing.append({"school_id": school_id, "reason": "district_unresolved"})
-            continue
-        if school.district not in valid_district_ids:
+        elif school.district not in valid_district_ids:
             missing.append({
                 "school_id": school_id,
                 "reason": "district_unresolved",
                 "district_id": school.district,
             })
-            continue
-        district_by_id[school_id] = school.district
+        else:
+            district_name = school.district
+            if not state_name:
+                state_name = (state_by_district.get(school.district) or "").strip()
 
-    return district_by_id, missing
+        if not state_name:
+            missing.append({"school_id": school_id, "reason": "state_missing_in_lms"})
+
+        # Partial info is still returned here; the caller decides whether
+        # an incomplete record should be skipped from the final output.
+        info_by_id[school_id] = {
+            "school_name": school_name,
+            "district_name": district_name,
+            "state_name": state_name,
+        }
+
+    return info_by_id, missing
 
 
 def _acquire_lock():
+    """
+    Simple DB-backed lock using the settings singleton itself — no Redis.
+
+    A run is allowed to start unless the last recorded status is RUNNING
+    and it started less than LOCK_STALE_MINUTES ago. This prevents two
+    overlapping runs while letting a crashed run self-heal after the
+    cooldown window instead of being stuck forever.
+    """
     settings = frappe.get_single(SETTINGS_DOCTYPE)
     status = settings.get("tsp_last_run_status")
     started_at = settings.get("tsp_last_run_at")
@@ -297,35 +365,48 @@ def _acquire_lock():
 
 
 def _run_query_and_resolve(poster_settings):
+    """
+    Fetch BigQuery rows, enrich them with LMS data, and build the final
+    payload. Schools whose name/district/state could not be fully
+    resolved from the LMS are left out of the output rows entirely
+    (no partial rows are sent to the Sheet) and are only recorded in
+    missing_mappings for follow-up.
+    """
     rows = fetch_rows(poster_settings)
 
     school_ids = [str(row["school_id"]) for row in rows if row["school_id"]]
-    district_by_id, district_missing = resolve_districts(school_ids)
+    info_by_id, resolve_missing = resolve_school_info(school_ids)
 
     result_rows = []
-    missing = list(district_missing)
+    missing = list(resolve_missing)
+
+    # Any school with an incomplete LMS record gets excluded from output,
+    # even if resolve_school_info returned a partial entry for it.
+    skipped_ids = {
+        school_id
+        for school_id, info in info_by_id.items()
+        if not info["school_name"] or not info["district_name"] or not info["state_name"]
+    }
 
     for row in rows:
         school_id = str(row["school_id"] or "").strip()
         if not school_id:
             continue
 
-        school_name = (row["school_name"] or "").strip()
-        if not school_name:
-            school_name = school_id
-            missing.append({"school_id": school_id, "reason": "name_missing_in_source"})
+        if school_id not in info_by_id:
+            continue
 
-        state_name = (row["state_name"] or "").strip()
-        if not state_name:
-            missing.append({"school_id": school_id, "reason": "state_missing_in_source"})
+        if school_id in skipped_ids:
+            missing.append({"school_id": school_id, "reason": "incomplete_lms_record_skipped"})
+            continue
 
-        district_name = district_by_id.get(school_id, "")
+        info = info_by_id[school_id]
 
         result_rows.append({
             "school_id": school_id,
-            "school_name": school_name,
-            "district_name": district_name,
-            "state_name": state_name,
+            "school_name": info["school_name"],
+            "district_name": info["district_name"],
+            "state_name": info["state_name"],
             "total_students_registered": int(row["total_students_registered"] or 0),
             "watched_video": int(row["watched_video"] or 0),
             "not_watched_video": int(row["not_watched_video"] or 0),
@@ -342,6 +423,7 @@ def _run_query_and_resolve(poster_settings):
 
 
 def _push_to_webapp(poster_settings, result):
+    """POST the result payload to the configured Apps Script Web App."""
     response = requests.post(
         poster_settings.webapp_url,
         json=dict(result, secret=poster_settings.secret),
@@ -362,6 +444,7 @@ def _push_to_webapp(poster_settings, result):
 
 
 def _persist_run(status, result=None, missing_count=0, error=None):
+    """Record the outcome of a run on the settings singleton (also releases the lock)."""
     settings = frappe.get_single(SETTINGS_DOCTYPE)
     settings.tsp_last_run_at = now_datetime()
     settings.tsp_last_run_status = status
@@ -383,6 +466,7 @@ def _persist_run(status, result=None, missing_count=0, error=None):
 
 
 def run_teacher_stats_poster():
+    """Entry point: validate config, acquire the lock, run, and push to the Sheet."""
     poster_settings = get_poster_settings()
 
     if not poster_settings.enabled:
