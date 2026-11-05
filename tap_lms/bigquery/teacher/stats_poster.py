@@ -19,7 +19,7 @@ WEBAPP_TIMEOUT_SECONDS = 60
 
 DEFAULT_MAX_BYTES_BILLED_GB = 10
 
-LOCK_STALE_MINUTES = 30
+LOCK_STALE_MINUTES = 10
 
 _PLAUSIBLE_SCHOOL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,39}$")
 
@@ -31,10 +31,6 @@ def _looks_like_school_id(value):
         return False
     return bool(_PLAUSIBLE_SCHOOL_ID_RE.match(value.strip()))
 
-
-# ---------------------------------------------------------------------------
-# settings
-# ---------------------------------------------------------------------------
 
 def get_poster_settings():
     settings = frappe.get_single(SETTINGS_DOCTYPE)
@@ -115,10 +111,6 @@ def get_bq_client(poster_settings):
     credentials = service_account.Credentials.from_service_account_info(info)
     return bigquery.Client(project=poster_settings.project_id, credentials=credentials)
 
-
-# ---------------------------------------------------------------------------
-# the BigQuery query — READ ONLY
-# ---------------------------------------------------------------------------
 
 QUERY_TEMPLATE = """
 WITH distinct_contacts AS (
@@ -224,10 +216,6 @@ def fetch_rows(poster_settings, client=None):
     return list(client.query(query, job_config=job_config).result())
 
 
-# ---------------------------------------------------------------------------
-# District resolution
-# ---------------------------------------------------------------------------
-
 def resolve_districts(school_ids):
     missing = []
 
@@ -244,8 +232,8 @@ def resolve_districts(school_ids):
     try:
         schools = frappe.db.get_all(
             "School",
-            filters={"name": ["in", safe_ids]},
-            fields=["name", "district"],
+            filters={"keyword": ["in", safe_ids]},
+            fields=["keyword", "district"],
         )
     except Exception:
         frappe.db.rollback()
@@ -254,7 +242,7 @@ def resolve_districts(school_ids):
             missing.append({"school_id": school_id, "reason": "district_unresolved"})
         return {}, missing
 
-    school_by_id = {row.name: row for row in schools}
+    school_by_id = {row.keyword: row for row in schools}
 
     district_ids = sorted({row.district for row in schools if row.district})
     valid_district_ids = set()
@@ -291,10 +279,6 @@ def resolve_districts(school_ids):
     return district_by_id, missing
 
 
-# ---------------------------------------------------------------------------
-# run lock — tsp_last_run_status doubles as the lock flag, no new fields
-# ---------------------------------------------------------------------------
-
 def _acquire_lock():
     settings = frappe.get_single(SETTINGS_DOCTYPE)
     status = settings.get("tsp_last_run_status")
@@ -311,17 +295,6 @@ def _acquire_lock():
     frappe.db.commit()
     return True
 
-
-def _release_lock_noop():
-    # _persist_run() always overwrites tsp_last_run_status with the final
-    # OK/ERROR outcome at the end of every code path, so the RUNNING flag
-    # set by _acquire_lock() never survives a completed run. Nothing to do.
-    pass
-
-
-# ---------------------------------------------------------------------------
-# the run
-# ---------------------------------------------------------------------------
 
 def _run_query_and_resolve(poster_settings):
     rows = fetch_rows(poster_settings)
