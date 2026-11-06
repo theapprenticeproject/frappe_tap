@@ -9,7 +9,7 @@ from frappe.model.document import Document
 from frappe.utils import now_datetime
 from google.auth.transport.requests import AuthorizedSession
 
-from tap_lms.imgana.submission import enqueue_submission
+from tap_lms.imgana.submission import enqueue_submissions_batch
 from tap_lms.onboarding.backend_upload_utils import (
 	FAILED_ROWS_GCP_PROJECT_ID,
 	get_google_service_account_credentials,
@@ -56,8 +56,8 @@ def run_queue_evaluations(docname):
 	doc.db_set({"status": "Queued", "total_assignments": len(assignment_ids), "total_submissions": len(submissions), "queued_at": now_datetime()})
 	frappe.db.commit()
 
-	for name in submissions:
-		enqueue_submission(name, eval_type="rubric")
+	for i in range(0, len(submissions), 50):
+		enqueue_submissions_batch(submissions[i : i + 50], eval_type="rubric")
 
 
 @frappe.whitelist()

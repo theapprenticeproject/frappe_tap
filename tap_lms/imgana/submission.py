@@ -10,6 +10,7 @@ GLIFIC_FEEDBACK_FLOW_ID = "41954"
 FEEDBACK_PIPELINE_MAX_RETRIES = 5
 FEEDBACK_PIPELINE_RETRY_LOG_TITLE = "Feedback Pipeline Retry"
 FEEDBACK_PIPELINE_DLQ_LOG_TITLE = "Feedback Pipeline DLQ - manual replay required"
+SUBMISSION_SOURCES = {"whatsapp", "tapapp"}
 
 
 def get_rabbitmq_settings():
@@ -53,6 +54,13 @@ def _normalize_submission_payload(submission):
     }
 
 
+def _normalize_source(source):
+    source = str(source or "whatsapp").strip().lower()
+    if source not in SUBMISSION_SOURCES:
+        frappe.throw("Source must be one of: whatsapp, tapapp")
+    return source
+
+
 def _looks_like_url(submission):
     parsed = urlparse(submission.strip())
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
@@ -94,13 +102,14 @@ def _get_student_payload_details(student_id):
         }
 
 
-def _create_submission(assignment_id, student_id, payload, language):
+def _create_submission(assignment_id, student_id, payload, language, source):
     submission_doc = frappe.new_doc("Submission")
     submission_doc.assign_id = assignment_id
     submission_doc.student_id = student_id
     submission_doc.submission_type = payload["submission_type"]
     submission_doc.submission_text = payload["submission_text"]
     submission_doc.submission_url = payload["submission_url"]
+    submission_doc.source = source
     submission_doc.status = "Pending"
     submission_doc.audio_feedback_url = "Null"
 
@@ -149,7 +158,7 @@ def _build_submission_response(submission_doc):
 
 
 @frappe.whitelist(allow_guest=True)
-def submit_artwork(assignment_id, student_id, submission):
+def submit_artwork(assignment_id, student_id, submission, source="whatsapp"):
     """
     Create a regular student Submission and publish it to the RabbitMQ feedback
     pipeline. Language is resolved from the Student record.
@@ -161,11 +170,13 @@ def submit_artwork(assignment_id, student_id, submission):
         student_id = _normalize_unicode_surrogates(
             _normalize_required_text(student_id, "Student ID")
         )
+        source = _normalize_source(source)
         raw_submission = str(submission or "")
 
         frappe.logger("submission").info(
             f"submit_artwork received: assignment_id={assignment_id}, "
-            f"student_id={student_id}, submission_chars={len(raw_submission)}, "
+            f"student_id={student_id}, source={source}, "
+            f"submission_chars={len(raw_submission)}, "
             f"submission_is_url={_looks_like_url(raw_submission) if raw_submission.strip() else False}"
         )
 
@@ -190,6 +201,7 @@ def submit_artwork(assignment_id, student_id, submission):
             student_id,
             payload,
             language,
+            source,
         )
         _queue_submission_processing(submission_doc)
         frappe.db.commit()
@@ -355,36 +367,46 @@ def submission_feedback(submission_id):
 
 def process_submission_async(submission_id, raw_submission=None, submission_url=None):
     """
-    Normalize the raw submission, upload URL media to GCS, then publish the
-    normalized Submission payload to RabbitMQ for feedback generation.
+    Normalize the raw submission, upload WhatsApp URL media to GCS, then
+    publish the normalized Submission payload to RabbitMQ for feedback.
     """
     try:
         submission_doc = frappe.get_doc("Submission", submission_id)
         raw_submission = (raw_submission or submission_url or "").strip()
+        source = getattr(submission_doc, "source", None) or "whatsapp"
 
         frappe.logger("submission").info(
             f"Async processing started: submission_id={submission_id}, "
             f"assignment_id={submission_doc.assign_id}, student_id={submission_doc.student_id}, "
+            f"source={source}, "
             f"raw_submission_chars={len(raw_submission)}, raw_submission_is_url={_looks_like_url(raw_submission) if raw_submission else False}"
         )
 
         if raw_submission and _looks_like_url(raw_submission):
-            from tap_lms.imgana.gcs_client import upload_to_gcs
             from tap_lms.imgana.media_detection import detect_url_media_type
 
             media_type = detect_url_media_type(raw_submission, default="image")
             frappe.logger("submission").info(
                 f"Async media detected: submission_id={submission_id}, media_type={media_type}"
             )
-            uploaded_url = upload_to_gcs(
-                raw_submission,
-                submission_doc.name,
-                media_type=media_type,
-            )
-            frappe.logger("submission").info(
-                f"Async media uploaded to GCS: submission_id={submission_id}, "
-                f"media_type={media_type}, uploaded_url={uploaded_url}"
-            )
+            if source == "tapapp":
+                uploaded_url = raw_submission
+                frappe.logger("submission").info(
+                    f"Async GCS upload bypassed: submission_id={submission_id}, "
+                    f"source={source}, media_type={media_type}"
+                )
+            else:
+                from tap_lms.imgana.gcs_client import upload_to_gcs
+
+                uploaded_url = upload_to_gcs(
+                    raw_submission,
+                    submission_doc.name,
+                    media_type=media_type,
+                )
+                frappe.logger("submission").info(
+                    f"Async media uploaded to GCS: submission_id={submission_id}, "
+                    f"media_type={media_type}, uploaded_url={uploaded_url}"
+                )
             submission_doc.submission_type = media_type
             submission_doc.submission_url = uploaded_url
             submission_doc.submission_text = None
@@ -445,6 +467,62 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
         raise
 
 
+def _build_payload(submission_doc, eval_type):
+    payload = {
+        "submission_id": submission_doc.name,
+        "assign_id": submission_doc.assign_id,
+        **_get_student_payload_details(submission_doc.student_id),
+        "submission_type": submission_doc.submission_type,
+        "submission_text": submission_doc.submission_text,
+        "submission_url": submission_doc.submission_url,
+        "source": getattr(submission_doc, "source", None) or "whatsapp",
+        "is_primary": getattr(submission_doc, "is_primary", 1),
+        "created_at": str(getattr(submission_doc, "created_at", submission_doc.creation)),
+    }
+    if eval_type:
+        payload["eval_type"] = eval_type
+    return payload
+
+
+def enqueue_submissions_batch(submission_ids, eval_type):
+    """Publish many submissions over one RabbitMQ connection. Submissions not confirmed
+    before a failure go through enqueue_submission, which has the retry handling."""
+    import pika
+
+    config = get_rabbitmq_settings()
+    parameters = pika.ConnectionParameters(
+        config["host"],
+        int(config["port"]),
+        config["virtual_host"],
+        pika.PlainCredentials(config["username"], config["password"]),
+    )
+    published = 0
+    try:
+        connection = pika.BlockingConnection(parameters)
+        try:
+            channel = connection.channel()
+            channel.confirm_delivery()
+            channel.queue_declare(queue=config["queue"], durable=True)
+            for submission_id in submission_ids:
+                payload = _build_payload(frappe.get_doc("Submission", submission_id), eval_type)
+                channel.basic_publish(
+                    exchange="",
+                    routing_key=config["queue"],
+                    body=json.dumps(payload, default=str),
+                    properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
+                    mandatory=True,
+                )
+                published += 1
+        finally:
+            connection.close()
+    except Exception as exc:
+        frappe.logger("submission").error(
+            f"RabbitMQ batch publish failed after {published}/{len(submission_ids)}: {exc}"
+        )
+        for submission_id in submission_ids[published:]:
+            enqueue_submission(submission_id, eval_type=eval_type)
+
+
 def enqueue_submission(submission_id, retry_count=0, eval_type=None):
     try:
         import pika
@@ -455,18 +533,7 @@ def enqueue_submission(submission_id, retry_count=0, eval_type=None):
             f"student_id={submission_doc.student_id}, "
             f"retry_count={retry_count or 0}"
         )
-        payload = {
-            "submission_id": submission_doc.name,
-            "assign_id": submission_doc.assign_id,
-            **_get_student_payload_details(submission_doc.student_id),
-            "submission_type": submission_doc.submission_type,
-            "submission_text": submission_doc.submission_text,
-            "submission_url": submission_doc.submission_url,
-            "is_primary": getattr(submission_doc, "is_primary", 1),
-            "created_at": str(getattr(submission_doc, "created_at", submission_doc.creation)),
-        }
-        if eval_type:
-            payload["eval_type"] = eval_type
+        payload = _build_payload(submission_doc, eval_type)
 
         rabbitmq_config = get_rabbitmq_settings()
         frappe.logger("submission").info(

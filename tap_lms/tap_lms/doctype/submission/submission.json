@@ -25,6 +25,7 @@
   "created_at",
   "completed_at",
   "content_section",
+  "source",
   "submission_type",
   "submission_text",
   "content_column_break",
@@ -92,6 +93,13 @@
    "fieldname": "student_id",
    "fieldtype": "Data",
    "label": "Student ID"
+  },
+  {
+   "default": "whatsapp",
+   "fieldname": "source",
+   "fieldtype": "Select",
+   "label": "Source",
+   "options": "whatsapp\ntapapp"
   },
   {
    "fieldname": "submission_type",
@@ -427,7 +435,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-11-02 13:00:00.000000",
+ "modified": "2026-11-06 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Submission",

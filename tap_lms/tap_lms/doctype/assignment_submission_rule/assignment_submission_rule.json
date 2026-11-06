@@ -1,6 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
+ "autoname": "format:{submission_label}-{language}-{###}",
  "creation": "2026-04-29 00:00:00.000000",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -89,6 +90,7 @@
  "modified_by": "Administrator",
  "module": "TAP LMS",
  "name": "Assignment Submission Rule",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [],
  "sort_field": "modified",
