@@ -24,9 +24,11 @@ GLIFIC_COLLECTION_BY_BATCH_ID = {
     "BT00000025": "TLM26_AllStudents_Batch2",
     "BT00000024": "TLM26_AllStudents_Batch1",
     "BT00000029": "TLM26_AllStudents_Batch UP",
+    "BT00000030": "TLM26_AllStudents_Batch3"
 }
 GLIFIC_COLLECTION_WITHOUT_COURSE_BY_BATCH_ID = {
     "BT00000029": "CourseSelection_Batch_UP",
+    "BT00000030": "TLM26_AllStudents_Batch3_CourseSelection"
 }
 GLIFIC_COLLECTION_WITHOUT_COURSE = "TLM26_AllStudents_APS"
 

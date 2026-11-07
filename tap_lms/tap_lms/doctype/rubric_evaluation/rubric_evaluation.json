@@ -46,18 +46,21 @@
   {
    "fieldname": "timestamp",
    "fieldtype": "Datetime",
-   "label": "Timestamp"
+   "label": "Timestamp",
+   "in_list_view": 1
   },
   {
    "fieldname": "model_used",
    "fieldtype": "Data",
-   "label": "Model Used"
+   "label": "Model Used",
+   "in_list_view": 1
   },
   {
    "fieldname": "rubric_eval_job",
    "fieldtype": "Link",
    "label": "Rubric Eval Job",
-   "options": "On Demand Evaluation"
+   "options": "On Demand Evaluation",
+   "in_list_view": 1
   }
  ],
  "index_web_pages_for_search": 1,

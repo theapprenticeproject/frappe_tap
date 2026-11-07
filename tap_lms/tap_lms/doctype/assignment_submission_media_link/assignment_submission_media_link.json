@@ -1,6 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
+ "autoname": "format:{link_type}-{language}-{###}",
  "creation": "2026-05-07 00:00:00.000000",
  "default_view": "List",
  "doctype": "DocType",
@@ -43,6 +44,7 @@
  "modified_by": "Administrator",
  "module": "TAP LMS",
  "name": "Assignment Submission Media Link",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [],
  "sort_field": "modified",

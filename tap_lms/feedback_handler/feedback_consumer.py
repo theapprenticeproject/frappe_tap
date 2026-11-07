@@ -14,6 +14,8 @@ MAX_ATTEMPTS = 3
 GLIFIC_FEEDBACK_FLOW_ID = "34108"
 DEMO_GLIFIC_COMMENT_SOURCE = "demo_submission"
 DEMO_GLIFIC_COMMENT_TYPE = "feedback_glific_contact"
+TAPAPP_SOURCE = "tapapp"
+TAPAPP_FEEDBACK_QUEUE = "dev_feedback_q"
 
 
 class FeedbackConsumer:
@@ -183,6 +185,29 @@ class FeedbackConsumer:
         submission_id = None
 
         try:
+            try:
+                payload = json.loads(body)
+            except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
+                payload = None
+
+            if isinstance(payload, dict) and payload.get("source") == TAPAPP_SOURCE:
+                ch.queue_declare(queue=TAPAPP_FEEDBACK_QUEUE, durable=True)
+                ch.basic_publish(
+                    exchange="",
+                    routing_key=TAPAPP_FEEDBACK_QUEUE,
+                    body=body,
+                    properties=pika.BasicProperties(
+                        delivery_mode=2,
+                        content_type="application/json",
+                    ),
+                )
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                frappe.logger().info(
+                    f"Forwarded {TAPAPP_SOURCE} feedback payload to "
+                    f"{TAPAPP_FEEDBACK_QUEUE} and acknowledged the original message"
+                )
+                return
+
             # Start new database transaction
             frappe.db.begin()
 
