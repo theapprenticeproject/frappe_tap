@@ -32,9 +32,16 @@
   "failed_rows",
   "failed_rows_file_url",
   "remaining_rows",
+  "drive_folder_url",
+  "continuation_job",
+  "continued_from",
   "glific_contact_files",
+  "summary_json_section",
+  "summary_json_display",
   "summary_json",
   "last_error",
+  "processing_log_section",
+  "processing_log_display",
   "processing_log"
  ],
  "fields": [
@@ -169,6 +176,27 @@
    "read_only": 1
   },
   {
+   "fieldname": "drive_folder_url",
+   "fieldtype": "Data",
+   "label": "Google Drive Folder",
+   "options": "URL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "continuation_job",
+   "fieldtype": "Link",
+   "label": "Continuation Job",
+   "options": "Student Bulk Import Job",
+   "read_only": 1
+  },
+  {
+   "fieldname": "continued_from",
+   "fieldtype": "Link",
+   "label": "Continued From",
+   "options": "Student Bulk Import Job",
+   "read_only": 1
+  },
+  {
    "fieldname": "glific_contact_files",
    "fieldtype": "Table",
    "label": "Glific Contact Files",
@@ -176,8 +204,18 @@
    "read_only": 1
   },
   {
+   "fieldname": "summary_json_section",
+   "fieldtype": "Section Break",
+   "label": "Summary JSON"
+  },
+  {
+   "fieldname": "summary_json_display",
+   "fieldtype": "HTML"
+  },
+  {
    "fieldname": "summary_json",
    "fieldtype": "Long Text",
+   "hidden": 1,
    "label": "Summary JSON",
    "read_only": 1
   },
@@ -188,8 +226,18 @@
    "read_only": 1
   },
   {
+   "fieldname": "processing_log_section",
+   "fieldtype": "Section Break",
+   "label": "Processing Log"
+  },
+  {
+   "fieldname": "processing_log_display",
+   "fieldtype": "HTML"
+  },
+  {
    "fieldname": "processing_log",
    "fieldtype": "JSON",
+   "hidden": 1,
    "label": "Processing Log",
    "read_only": 1
   }

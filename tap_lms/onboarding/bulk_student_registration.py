@@ -15,14 +15,14 @@ from openpyxl.styles import PatternFill
 from psycopg2.extras import execute_values
 
 from tap_lms.onboarding.backend_upload_utils import (
-    FAILED_ROWS_GCP_PROJECT_ID,
     GCP_CREDENTIALS_PROJECT_ID,
     GLIFIC_EXISTING_STUDENT_CSV_HEADERS,
     GLIFIC_NEW_STUDENT_CSV_HEADERS,
+    create_google_drive_folder as _create_google_drive_folder,
     get_google_service_account_credentials as _get_google_service_account_credentials,
     get_google_service_account_email as _get_google_service_account_email,
-    upload_bytes_to_gcs as _upload_bytes_to_gcs,
-    upload_glific_contact_csv as _upload_glific_contact_csv,
+    render_glific_contact_csv as _render_glific_contact_csv,
+    upload_bytes_to_google_drive as _upload_bytes_to_google_drive,
 )
 from tap_lms.tap_lms.doctype.student.student import BLOCKED_BATCH_ID
 
@@ -164,10 +164,22 @@ def run_import(
 
         precheck = _run_prechecks()
         _print_precheck(precheck, log_fn=log_fn)
+        drive_folder = _create_google_drive_folder(
+            _build_job_drive_folder_name(job_name, started_at)
+        )
+        _emit(
+            log_fn,
+            "[student-import] drive_folder "
+            f"name={drive_folder['name']} url={drive_folder['url']}",
+        )
         failed_rows_file_url = ""
         if precheck["invalid_rows"] > 0:
             try:
-                failed_rows_file_url = _create_and_upload_failed_rows_workbook(tab_names, job_name=job_name)
+                failed_rows_file_url = _create_and_upload_failed_rows_workbook(
+                    tab_names,
+                    drive_folder_id=drive_folder["id"],
+                    job_name=job_name,
+                )
                 _emit(log_fn, f"[student-import] failed_rows_file_url={failed_rows_file_url}")
             except Exception as exc:
                 _emit(log_fn, f"[student-import] failed_rows_workbook_upload_failed error={exc}")
@@ -188,8 +200,15 @@ def run_import(
             "failed_rows": precheck["invalid_rows"],
             "skipped_rows": precheck["invalid_rows"],
             "failed_rows_file_url": failed_rows_file_url,
+            "drive_folder_url": drive_folder["url"],
             "glific_contact_files": [],
         }
+        _emit_progress(progress_fn, {
+            "event": "artifacts_ready",
+            "effective_rows": total_effective_rows,
+            "summary": dict(summary),
+            "message": f"[student-import] output folder ready url={drive_folder['url']}",
+        })
         for batch_no, offset in enumerate(range(0, total_effective_rows, batch_size), start=1):
             _prepare_batch_subset(offset=offset, batch_size=batch_size)
             batch_summary = _execute_import(
@@ -236,6 +255,7 @@ def run_import(
                 remaining_rows_url, remaining_rows_count = _create_and_upload_remaining_rows_workbook(
                     processed_total=int(summary["processed_rows"]),
                     tab_names=tab_names,
+                    drive_folder_id=drive_folder["id"],
                     job_name=job_name,
                 )
                 summary["remaining_rows"] = remaining_rows_url
@@ -263,7 +283,10 @@ def run_import(
                 break
 
         try:
-            summary["glific_contact_files"] = _create_and_upload_glific_contact_csvs(tab_names)
+            summary["glific_contact_files"] = _create_and_upload_glific_contact_csvs(
+                tab_names,
+                drive_folder_id=drive_folder["id"],
+            )
             for export_file in summary["glific_contact_files"]:
                 _emit(
                     log_fn,
@@ -296,6 +319,11 @@ def run_import(
 
 
 def _download_workbook(spreadsheet_url: str):
+    drive_file_id = _extract_drive_file_id(spreadsheet_url)
+    if drive_file_id and not _extract_sheet_id(spreadsheet_url):
+        response = _download_private_drive_file(drive_file_id)
+        return load_workbook(BytesIO(response.content), read_only=True, data_only=True)
+
     download_url = _build_download_url(spreadsheet_url)
     response = requests.get(download_url, timeout=120)
     if response.ok:
@@ -323,6 +351,18 @@ def _build_download_url(spreadsheet_url: str) -> str:
 def _extract_sheet_id(spreadsheet_url: str) -> str | None:
     match = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", spreadsheet_url)
     return match.group(1) if match else None
+
+
+def _extract_drive_file_id(file_url: str) -> str | None:
+    for pattern in (
+        r"/spreadsheets/d/([a-zA-Z0-9-_]+)",
+        r"/file/d/([a-zA-Z0-9-_]+)",
+        r"[?&]id=([a-zA-Z0-9-_]+)",
+    ):
+        match = re.search(pattern, file_url)
+        if match:
+            return match.group(1)
+    return None
 
 
 def _download_private_workbook(file_id: str) -> requests.Response:
@@ -363,6 +403,26 @@ def _download_private_workbook(file_id: str) -> requests.Response:
     return response
 
 
+def _download_private_drive_file(file_id: str) -> requests.Response:
+    credentials = _get_google_service_account_credentials()
+    session = AuthorizedSession(credentials)
+    response = session.get(
+        "https://www.googleapis.com/drive/v3/files/{file_id}".format(file_id=file_id),
+        params={"alt": "media", "supportsAllDrives": "true"},
+        timeout=120,
+    )
+    if response.status_code == 403:
+        service_account_email = _get_google_service_account_email()
+        raise frappe.ValidationError(
+            "Private Google Drive file access denied (403). "
+            f"Share the file with the service account '{service_account_email}' "
+            f"from GCS Settings project_id '{GCP_CREDENTIALS_PROJECT_ID}', "
+            "or verify that the Google Drive API is enabled for that project."
+        )
+    response.raise_for_status()
+    return response
+
+
 def _is_file_not_exportable_response(response: requests.Response) -> bool:
     if response.status_code != 403:
         return False
@@ -374,7 +434,11 @@ def _is_file_not_exportable_response(response: requests.Response) -> bool:
     return any(error.get("reason") == "fileNotExportable" for error in errors if isinstance(error, dict))
 
 
-def _create_and_upload_failed_rows_workbook(tab_names: list[str], job_name: str | None = None) -> str:
+def _create_and_upload_failed_rows_workbook(
+    tab_names: list[str],
+    drive_folder_id: str,
+    job_name: str | None = None,
+) -> str:
     wb = Workbook()
     default_sheet = wb.active
     wb.remove(default_sheet)
@@ -454,13 +518,18 @@ def _create_and_upload_failed_rows_workbook(tab_names: list[str], job_name: str 
     wb.save(buffer)
     timestamp = frappe.utils.now_datetime().strftime("%Y%m%d_%H%M%S")
     file_stem = _build_failed_rows_filename_stem(job_name, timestamp)
-    object_name = f"student-bulk-import-failures/{file_stem}.xlsx"
-    return _upload_bytes_to_gcs(buffer.getvalue(), object_name, FAILED_ROWS_GCP_PROJECT_ID)
+    return _upload_bytes_to_google_drive(
+        buffer.getvalue(),
+        f"{file_stem}.xlsx",
+        drive_folder_id,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 def _create_and_upload_remaining_rows_workbook(
     processed_total: int,
     tab_names: list[str],
+    drive_folder_id: str,
     job_name: str | None = None,
 ) -> tuple[str, int]:
     remaining_rows = _rows("""
@@ -505,23 +574,29 @@ def _create_and_upload_remaining_rows_workbook(
 
     timestamp = frappe.utils.now_datetime().strftime("%Y%m%d_%H%M%S")
     file_stem = _build_remaining_rows_filename_stem(job_name, timestamp)
-    object_name = f"student-bulk-import-remaining/{file_stem}.xlsx"
-    file_url = _upload_bytes_to_gcs(
+    file_url = _upload_bytes_to_google_drive(
         buffer.getvalue(),
-        object_name,
-        FAILED_ROWS_GCP_PROJECT_ID,
+        f"{file_stem}.xlsx",
+        drive_folder_id,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
     return file_url, len(remaining_rows)
 
 
 def _build_failed_rows_filename_stem(job_name: str | None, timestamp: str) -> str:
     sanitized_job_name = re.sub(r"[^A-Za-z0-9_-]+", "_", (job_name or "").strip()).strip("_")
-    return f"{sanitized_job_name or 'student_bulk_import'}_{timestamp}"
+    return f"{sanitized_job_name or 'student_bulk_import'}_failed_rows_{timestamp}"
 
 
 def _build_remaining_rows_filename_stem(job_name: str | None, timestamp: str) -> str:
     sanitized_job_name = re.sub(r"[^A-Za-z0-9_-]+", "_", (job_name or "").strip()).strip("_")
     return f"{sanitized_job_name or 'student_bulk_import'}_remaining_rows_{timestamp}"
+
+
+def _build_job_drive_folder_name(job_name: str | None, started_at: datetime) -> str:
+    sanitized_job_name = re.sub(r"[\x00-\x1f]+", " ", (job_name or "").strip()).strip()
+    timestamp = started_at.strftime("%Y%m%d_%H%M%S")
+    return f"{sanitized_job_name or 'student_bulk_import'}_{timestamp}"
 
 
 def _build_glific_contact_file_name(
@@ -534,7 +609,7 @@ def _build_glific_contact_file_name(
         "_",
         (tab_name or "").strip(),
     ).strip("_")
-    return f"{sanitized_tab_name or 'sheet'}_{student_type}_students_{timestamp}.csv"
+    return f"{sanitized_tab_name or 'sheet'}_{student_type}_students_{timestamp}_glific.csv"
 
 
 def _glific_contact_row_for_headers(row: dict, headers: Iterable[str]) -> dict[str, str]:
@@ -544,7 +619,10 @@ def _glific_contact_row_for_headers(row: dict, headers: Iterable[str]) -> dict[s
     }
 
 
-def _create_and_upload_glific_contact_csvs(tab_names: list[str]) -> list[dict]:
+def _create_and_upload_glific_contact_csvs(
+    tab_names: list[str],
+    drive_folder_id: str,
+) -> list[dict]:
     rows = _rows("""
         SELECT
             x.source_tab,
@@ -609,10 +687,11 @@ def _create_and_upload_glific_contact_csvs(tab_names: list[str]) -> list[dict]:
         ):
             contact_rows = rows_for_tab.get(student_type, [])
             file_name = _build_glific_contact_file_name(tab_name, student_type, timestamp)
-            file_path = _upload_glific_contact_csv(
+            file_path = _upload_bytes_to_google_drive(
+                _render_glific_contact_csv(contact_rows, headers=headers),
                 file_name,
-                contact_rows,
-                headers=headers,
+                drive_folder_id,
+                "text/csv",
             )
             exported_files.append({
                 "tab_name": tab_name,

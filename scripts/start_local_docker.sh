@@ -44,6 +44,11 @@ POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
 BUSINESS_THEME_REPO="${BUSINESS_THEME_REPO:-https://github.com/Midocean-Technologies/business_theme_v14.git}"
 FRAPPE_PYTHON_VERSION="${FRAPPE_PYTHON_VERSION:-}"
 
+if [[ -n "$FRAPPE_PYTHON_VERSION" ]]; then
+  pyenv install -s "$FRAPPE_PYTHON_VERSION"
+  export PYENV_VERSION="$FRAPPE_PYTHON_VERSION"
+fi
+
 if [[ ! -d /home/frappe/frappe-bench/apps/frappe ]]; then
   if [[ -n "$(find /home/frappe/frappe-bench -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
     echo "/home/frappe/frappe-bench is not empty but Frappe is missing."
@@ -51,10 +56,6 @@ if [[ ! -d /home/frappe/frappe-bench/apps/frappe ]]; then
     exit 1
   fi
   cd /home/frappe
-  if [[ -n "$FRAPPE_PYTHON_VERSION" ]]; then
-    pyenv install -s "$FRAPPE_PYTHON_VERSION"
-    export PYENV_VERSION="$FRAPPE_PYTHON_VERSION"
-  fi
   bench init \
     --frappe-branch "$FRAPPE_BRANCH" \
     --skip-redis-config-generation \

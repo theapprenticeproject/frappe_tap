@@ -4,8 +4,10 @@ import csv
 import json
 from io import StringIO
 from typing import Sequence
+from uuid import uuid4
 
 import frappe
+from google.auth.transport.requests import AuthorizedSession
 from google.cloud import storage
 from google.oauth2 import service_account
 
@@ -13,6 +15,7 @@ from google.oauth2 import service_account
 GCP_CREDENTIALS_PROJECT_ID = "rubrics-data-migration"
 FAILED_ROWS_GCP_PROJECT_ID = "central-phalanx-297915"
 GLIFIC_CONTACTS_FOLDER = "Glific_contacts"
+STUDENT_BULK_IMPORT_DRIVE_FOLDER_ID = "1__wcgwdQT0heEpf-g0vhfL8lRTb_jkG8"
 GLIFIC_NEW_STUDENT_CSV_HEADERS = [
     "name",
     "phone",
@@ -49,6 +52,9 @@ GOOGLE_DRIVE_READONLY_SCOPES = (
 )
 GOOGLE_SHEETS_READWRITE_SCOPES = (
     "https://www.googleapis.com/auth/spreadsheets",
+)
+GOOGLE_DRIVE_READWRITE_SCOPES = (
+    "https://www.googleapis.com/auth/drive",
 )
 
 
@@ -90,6 +96,83 @@ def get_google_service_account_email(project_id: str = GCP_CREDENTIALS_PROJECT_I
     except Exception:
         return ""
     return str(credentials_dict.get("client_email") or "").strip()
+
+
+def create_google_drive_folder(
+    folder_name: str,
+    parent_folder_id: str = STUDENT_BULK_IMPORT_DRIVE_FOLDER_ID,
+) -> dict[str, str]:
+    session = AuthorizedSession(
+        get_google_service_account_credentials(scopes=GOOGLE_DRIVE_READWRITE_SCOPES)
+    )
+    response = session.post(
+        "https://www.googleapis.com/drive/v3/files",
+        params={
+            "fields": "id,name,webViewLink",
+            "supportsAllDrives": "true",
+        },
+        json={
+            "name": folder_name,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [parent_folder_id],
+        },
+        timeout=120,
+    )
+    response.raise_for_status()
+    folder = response.json()
+    folder_id = str(folder["id"])
+    return {
+        "id": folder_id,
+        "name": str(folder.get("name") or folder_name),
+        "url": str(folder.get("webViewLink") or f"https://drive.google.com/drive/folders/{folder_id}"),
+    }
+
+
+def upload_bytes_to_google_drive(
+    content: bytes,
+    file_name: str,
+    parent_folder_id: str,
+    content_type: str,
+) -> str:
+    session = AuthorizedSession(
+        get_google_service_account_credentials(scopes=GOOGLE_DRIVE_READWRITE_SCOPES)
+    )
+    boundary = f"codex_{uuid4().hex}"
+    metadata = json.dumps({
+        "name": file_name,
+        "mimeType": content_type,
+        "parents": [parent_folder_id],
+    }).encode("utf-8")
+    body = b"\r\n".join([
+        f"--{boundary}".encode("ascii"),
+        b"Content-Type: application/json; charset=UTF-8",
+        b"",
+        metadata,
+        f"--{boundary}".encode("ascii"),
+        f"Content-Type: {content_type}".encode("ascii"),
+        b"",
+        content,
+        f"--{boundary}--".encode("ascii"),
+        b"",
+    ])
+    response = session.post(
+        "https://www.googleapis.com/upload/drive/v3/files",
+        params={
+            "uploadType": "multipart",
+            "fields": "id,name,webViewLink",
+            "supportsAllDrives": "true",
+        },
+        headers={"Content-Type": f"multipart/related; boundary={boundary}"},
+        data=body,
+        timeout=120,
+    )
+    response.raise_for_status()
+    uploaded_file = response.json()
+    file_id = str(uploaded_file["id"])
+    return str(
+        uploaded_file.get("webViewLink")
+        or f"https://drive.google.com/file/d/{file_id}/view"
+    )
 
 
 def upload_bytes_to_gcs(

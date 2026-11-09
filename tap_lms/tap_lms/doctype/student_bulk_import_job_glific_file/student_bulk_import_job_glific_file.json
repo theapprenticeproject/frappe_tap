@@ -23,6 +23,7 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "File Path",
+   "options": "URL",
    "read_only": 1
   },
   {

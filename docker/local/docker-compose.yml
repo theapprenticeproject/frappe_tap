@@ -55,6 +55,10 @@ services:
     ports:
       - "${REDIS_QUEUE_PORT:-6380}:6379"
 
+networks:
+  default:
+    enable_ipv6: true
+
 volumes:
   bench-data:
   postgres-data:

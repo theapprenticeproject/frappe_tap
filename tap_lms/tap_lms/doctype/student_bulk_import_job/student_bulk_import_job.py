@@ -13,6 +13,7 @@ from tap_lms.onboarding.bulk_student_registration import run_import
 
 STUDENT_BULK_IMPORT_TIMEOUT_SECONDS = 7200
 STUDENT_BULK_IMPORT_STOP_BEFORE_TIMEOUT_SECONDS = 600
+STUDENT_BULK_IMPORT_JOB_NAME_LENGTH = 140
 
 
 class StudentBulkImportJob(Document):
@@ -65,7 +66,7 @@ def _append_log(docname: str, message: str) -> None:
         "Student Bulk Import Job",
         docname,
         "processing_log",
-        json.dumps({"entries": log_entries}, ensure_ascii=True),
+        json.dumps({"entries": log_entries}, ensure_ascii=True, indent=2),
         update_modified=False,
     )
 
@@ -83,6 +84,8 @@ def _update_progress(docname: str, payload: dict) -> None:
         updates["failed_rows_file_url"] = str(summary["failed_rows_file_url"] or "")
     if "remaining_rows" in summary:
         updates["remaining_rows"] = str(summary["remaining_rows"] or "")
+    if "drive_folder_url" in summary:
+        updates["drive_folder_url"] = str(summary["drive_folder_url"] or "")
     if payload.get("event") == "completed":
         updates["summary_json"] = json.dumps(summary, indent=2, sort_keys=True)
         updates["elapsed"] = str(summary.get("elapsed") or "")
@@ -92,8 +95,58 @@ def _update_progress(docname: str, payload: dict) -> None:
 
 def _set_job_state(docname: str, **updates) -> None:
     if "processing_log" in updates and not isinstance(updates["processing_log"], str):
-        updates["processing_log"] = json.dumps(updates["processing_log"], ensure_ascii=True)
+        updates["processing_log"] = json.dumps(
+            updates["processing_log"],
+            ensure_ascii=True,
+            indent=2,
+        )
     frappe.db.set_value("Student Bulk Import Job", docname, updates, update_modified=False)
+
+
+def _create_and_start_continuation_job(
+    source_job: StudentBulkImportJob,
+    remaining_rows_url: str,
+) -> dict:
+    continuation_name = frappe.db.get_value(
+        "Student Bulk Import Job",
+        source_job.name,
+        "continuation_job",
+    )
+    if continuation_name and frappe.db.exists("Student Bulk Import Job", continuation_name):
+        continuation = frappe.get_doc("Student Bulk Import Job", continuation_name)
+    else:
+        timestamp = frappe.utils.now_datetime().strftime("%Y%m%d_%H%M%S")
+        continuation_job_name = (
+            f"{source_job.job_name} - continuation {timestamp}"
+        )[:STUDENT_BULK_IMPORT_JOB_NAME_LENGTH]
+        continuation = frappe.get_doc({
+            "doctype": "Student Bulk Import Job",
+            "job_name": continuation_job_name,
+            "spreadsheet_url": remaining_rows_url,
+            "tab_names_json": source_job.tab_names_json,
+            "batch_size": int(source_job.batch_size or 100),
+            "sample_test": 0,
+            "status": "Draft",
+            "continued_from": source_job.name,
+        })
+        continuation.insert(ignore_permissions=True)
+        frappe.db.set_value(
+            "Student Bulk Import Job",
+            source_job.name,
+            "continuation_job",
+            continuation.name,
+            update_modified=False,
+        )
+
+    if continuation.status not in {"Queued", "Processing", "Completed"}:
+        queued = start_student_bulk_import_job(continuation.name)
+    else:
+        queued = {"status": continuation.status}
+    return {
+        "name": continuation.name,
+        "status": queued.get("status") or continuation.status,
+        "job_id": queued.get("job_id") or "",
+    }
 
 
 @frappe.whitelist()
@@ -116,6 +169,8 @@ def start_student_bulk_import_job(docname: str) -> dict:
         failed_rows=0,
         failed_rows_file_url="",
         remaining_rows="",
+        drive_folder_url="",
+        continuation_job="",
         summary_json="",
         last_error="",
         processing_log={"entries": []},
@@ -170,6 +225,21 @@ def run_student_bulk_import_job(docname: str, import_date: str | None = None) ->
             progress_fn=progress_fn,
         )
 
+        continuation = None
+        if summary.get("remaining_rows") and int(summary.get("remaining_rows_count") or 0) > 0:
+            continuation = _create_and_start_continuation_job(
+                doc,
+                str(summary["remaining_rows"]),
+            )
+            summary["continuation_job"] = continuation["name"]
+            summary["continuation_job_status"] = continuation["status"]
+            summary["continuation_queue_job_id"] = continuation["job_id"]
+            _append_log(
+                docname,
+                "[student-import] continuation queued "
+                f"job={continuation['name']} queue_job_id={continuation['job_id']}",
+            )
+
         _set_glific_contact_files(docname, summary.get("glific_contact_files") or [])
         _set_job_state(
             docname,
@@ -177,6 +247,8 @@ def run_student_bulk_import_job(docname: str, import_date: str | None = None) ->
             completed_at=frappe.utils.now_datetime(),
             elapsed=str(summary.get("elapsed") or ""),
             remaining_rows=str(summary.get("remaining_rows") or ""),
+            drive_folder_url=str(summary.get("drive_folder_url") or ""),
+            continuation_job=(continuation or {}).get("name") or "",
             summary_json=json.dumps(summary, indent=2, sort_keys=True),
             last_error="",
         )
