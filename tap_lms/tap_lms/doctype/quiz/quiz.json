@@ -23,8 +23,7 @@
   {
    "fieldname": "quiz_name",
    "fieldtype": "Data",
-   "label": "Quiz Name",
-   "unique": 1
+   "label": "Quiz Name"
   },
   {
    "fieldname": "description",
