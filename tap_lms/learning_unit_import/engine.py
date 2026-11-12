@@ -1282,17 +1282,13 @@ def parse_unit_filters(text: str) -> list[str]:
 
     filters = [clean(value) for value in text.split(",") if clean(value)]
     if not filters:
-        raise ValueError("Unit Filters must contain comma-separated activity codes such as RA1, RA2, CA1")
+        raise ValueError("Unit Filters must contain comma-separated values")
     seen = set()
-    for activity_code in filters:
-        if not re.fullmatch(r"[A-Za-z]+[0-9]+\*?", activity_code):
-            raise ValueError(
-                f"Unit Filters must contain activity codes such as RA1 or RA1*; got {activity_code!r}"
-            )
-        normalized_code = normalize(activity_code)
-        if normalized_code in seen:
-            raise ValueError(f"Duplicate activity code in Unit Filters: {activity_code}")
-        seen.add(normalized_code)
+    for unit_filter in filters:
+        normalized_filter = normalize(unit_filter)
+        if normalized_filter in seen:
+            raise ValueError(f"Duplicate value in Unit Filters: {unit_filter}")
+        seen.add(normalized_filter)
     return filters
 
 
@@ -1301,14 +1297,17 @@ def match_unit_filter(config: ImportConfig, unit_activity: str) -> tuple[bool, i
         return True, 0
 
     normalized_unit = normalize(unit_activity)
-    for filter_order, activity_code in enumerate(config.unit_filters):
-        normalized_code = normalize(activity_code)
-        if normalized_code.endswith("*"):
-            code_prefix = re.escape(normalized_code[:-1])
-            matched = bool(re.search(rf"(?<![a-z0-9]){code_prefix}[0-9]*(?![a-z0-9])", normalized_unit))
+    for filter_order, unit_filter in enumerate(config.unit_filters):
+        normalized_filter = normalize(unit_filter)
+        if normalized_filter.endswith("*"):
+            filter_prefix = re.escape(normalized_filter[:-1])
+            matched = bool(re.search(rf"(?<![a-z0-9]){filter_prefix}", normalized_unit))
         else:
             matched = bool(
-                re.search(rf"(?<![a-z0-9]){re.escape(normalized_code)}(?![a-z0-9])", normalized_unit)
+                re.search(
+                    rf"(?<![a-z0-9]){re.escape(normalized_filter)}(?![a-z0-9])",
+                    normalized_unit,
+                )
             )
         if matched:
             return True, filter_order

@@ -34,7 +34,7 @@
   },
   {
    "columns": 4,
-   "description": "Comma-separated activity codes in import order. RA1 matches exactly; RA1* also matches RA10, RA11, etc. Weeks start after the Course Level's current maximum. Leave empty to import all activities in sheet order.",
+   "description": "Comma-separated values in import order. A value without * matches exactly; a trailing * enables prefix matching. Weeks start after the Course Level's current maximum. Leave empty to import all activities in sheet order.",
    "fieldname": "unit_filters",
    "fieldtype": "Small Text",
    "in_list_view": 1,
