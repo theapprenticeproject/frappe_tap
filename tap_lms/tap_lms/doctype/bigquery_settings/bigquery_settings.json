@@ -24,7 +24,6 @@
   "last_run_summary",
   "tsp_section_break",
   "tsp_enabled",
-  "tsp_webapp_url",
   "tsp_secret",
   "tsp_column_break_1",
   "tsp_dataset_id",
@@ -36,9 +35,8 @@
   "tsp_watched_flow_label",
   "tsp_shared_flow_label",
   "tsp_column_break_3",
-  "tsp_date_filter_mode",
-  "tsp_custom_from",
-  "tsp_custom_to",
+  "tsp_parquet_dir",
+  "tsp_gcs_settings",
   "tsp_max_query_gb",
   "tsp_section_break_diag",
   "tsp_last_run_at",
@@ -59,7 +57,7 @@
    "label": "Connection"
   },
   {
-   "description": "GCP project id. Used by both the image-sync job above and Teacher Stats Poster below.",
+   "description": "GCP project id. Used by both the image-sync job above and Teacher Reporting below.",
    "fieldname": "project_id",
    "fieldtype": "Data",
    "label": "Project ID"
@@ -81,7 +79,7 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "Service account key JSON. Needs BigQuery Data Viewer + Job User on the project above. Stored encrypted. Teacher Stats Poster below reuses this same project_id + credentials_json — it does not keep its own copy.",
+   "description": "Service account key JSON. Needs BigQuery Data Viewer + Job User on the project above. Stored encrypted. Teacher Reporting below reuses this same project_id + credentials_json.",
    "fieldname": "credentials_json",
    "fieldtype": "Password",
    "label": "Credentials JSON"
@@ -149,27 +147,20 @@
   },
   {
    "collapsible": 1,
-   "description": "Fully independent report. Shares ONLY the Project ID / Credentials JSON above (same BigQuery, same service account) — nothing else. Does not read or require the 'Enabled' checkbox, lookback_days, batch_limit, flow_label_filter or any other image-sync field above; has its own tables, filters, secret and schedule. Safe to configure even while the image-sync job above is broken or disabled. This job PUSHES its result to the Apps Script Web App URL below — there is no inbound endpoint to call.",
+   "description": "Weekly BigQuery -> parquet extract + on-demand PDF report endpoint for Glific. Shares ONLY the Project ID / Credentials JSON above. Does not read or require the 'Enabled' checkbox, lookback_days, batch_limit, flow_label_filter or any other image-sync field above; has its own tables, filters, secret and schedule.",
    "fieldname": "tsp_section_break",
    "fieldtype": "Section Break",
-   "label": "Teacher Stats Poster"
+   "label": "Teacher Reporting"
   },
   {
    "default": "0",
    "description": "Independent of the 'Enabled' checkbox at the top of this doctype — that one is for the image-sync job only.",
    "fieldname": "tsp_enabled",
    "fieldtype": "Check",
-   "label": "Enable Teacher Stats Poster"
+   "label": "Enable Teacher Reporting"
   },
   {
-   "description": "The Apps Script Web App URL this job pushes results to, e.g. https://script.google.com/macros/s/AKfycb.../exec — from Deploy > New deployment > Web app in the spreadsheet's Apps Script editor. Must be deployed with access set to \"Anyone\" (Apps Script still requires the shared secret below to accept the request).",
-   "fieldname": "tsp_webapp_url",
-   "fieldtype": "Data",
-   "label": "Apps Script Web App URL",
-   "reqd": 1
-  },
-  {
-   "description": "Shared secret sent as the X-TSP-API-Key header on every push to the Web App above. Must match the value stored in the Apps Script project's Script Properties under TSP_API_KEY exactly. Generate a long random value (32+ chars); never reuse a secret from another integration.",
+   "description": "Shared secret the on-demand endpoint requires as api_key. Generate a long random value (32+ chars); never reuse a secret from another integration.",
    "fieldname": "tsp_secret",
    "fieldtype": "Password",
    "label": "Shared Secret",
@@ -180,21 +171,21 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "BigQuery dataset id (the part between project and table, e.g. the dataset your Glific-to-BigQuery sync writes into). Combined with Project ID above and each table name below to form project.dataset.table — no table name anywhere in this doctype or in code needs the project or dataset repeated.",
+   "description": "BigQuery dataset id. Combined with Project ID above and each table name below to form project.dataset.table.",
    "fieldname": "tsp_dataset_id",
    "fieldtype": "Data",
    "label": "Dataset ID",
    "reqd": 1
   },
   {
-   "description": "BigQuery CONTACTS table name only (no project or dataset prefix — those come from the fields above). Confirm the exact table name with whoever set up the Glific-to-BigQuery contact sync; it is NOT one of the tables configured above, since nothing above reads contacts. Must have columns: id, phone, updated_at, group_labels, raw_fields (JSON containing school_id.value).",
+   "description": "BigQuery CONTACTS table name only (no project/dataset prefix). Must have columns: id, phone, updated_at, group_labels, raw_fields (JSON containing student_id.value, grade.value, school_id.value).",
    "fieldname": "tsp_contacts_table",
    "fieldtype": "Data",
    "label": "Contacts Table",
    "reqd": 1
   },
   {
-   "description": "BigQuery messages table name for this report, no project or dataset prefix. Both this job and the image-sync job above typically read the same underlying messages table — confirm it has contact_phone, flow_name, flow_label and inserted_at, and set it to match the image-sync job's Messages Table (without the project/dataset prefix) unless your setup genuinely uses a different one for this report.",
+   "description": "BigQuery messages table name for this report, no project/dataset prefix. Must have contact_phone, flow_name, flow_label, inserted_at.",
    "fieldname": "tsp_messages_table",
    "fieldtype": "Data",
    "label": "Messages Table (Stats)",
@@ -205,28 +196,28 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "BigQuery REGEXP_CONTAINS pattern matched against contacts.group_labels, e.g. (^|,)\\s*(GROUP_LABEL_ONE|GROUP_LABEL_TWO)\\s*(,|$) — replace with your actual Glific group label names.",
+   "description": "BigQuery REGEXP_CONTAINS pattern matched against contacts.group_labels.",
    "fieldname": "tsp_group_label_pattern",
    "fieldtype": "Data",
    "label": "Group Label Regex Pattern",
    "reqd": 1
   },
   {
-   "description": "SQL LIKE pattern for flow_name, e.g. %YourMainFlowName% — replace with your actual Glific main flow name.",
+   "description": "SQL LIKE pattern for flow_name, e.g. %YourMainFlowName%.",
    "fieldname": "tsp_main_flow_name",
    "fieldtype": "Data",
    "label": "Main Flow Name (LIKE pattern)",
    "reqd": 1
   },
   {
-   "description": "SQL LIKE pattern for flow_label identifying a 'watched' event, e.g. %Activity_Access% — replace with your actual Glific flow label for video-watched.",
+   "description": "SQL LIKE pattern for flow_label identifying a 'watched' event, e.g. %Activity_Access%.",
    "fieldname": "tsp_watched_flow_label",
    "fieldtype": "Data",
    "label": "Watched Flow Label (LIKE pattern)",
    "reqd": 1
   },
   {
-   "description": "SQL LIKE pattern for flow_label identifying a 'shared' event, e.g. %Activity_Submission% — replace with your actual Glific flow label for work-shared.",
+   "description": "SQL LIKE pattern for flow_label identifying a 'shared' event, e.g. %Activity_Submission%.",
    "fieldname": "tsp_shared_flow_label",
    "fieldtype": "Data",
    "label": "Shared Flow Label (LIKE pattern)",
@@ -237,27 +228,23 @@
    "fieldtype": "Column Break"
   },
   {
-   "default": "All",
-   "fieldname": "tsp_date_filter_mode",
-   "fieldtype": "Select",
-   "label": "Date Filter",
-   "options": "All\nWeekly\nBi-monthly\nMonthly\nCustom"
+   "description": "Absolute filesystem path (same mount throughout) under which 'live/', '.staging/' and missing.jsonl are kept. A path under the site's private/files tree works by default, e.g. /home/frappe/frappe-bench/sites/<site>/private/files/teacher_reporting.",
+   "fieldname": "tsp_parquet_dir",
+   "fieldtype": "Data",
+   "label": "Parquet Storage Dir",
+   "reqd": 1
   },
   {
-   "depends_on": "eval:doc.tsp_date_filter_mode=='Custom'",
-   "fieldname": "tsp_custom_from",
-   "fieldtype": "Datetime",
-   "label": "Custom From"
-  },
-  {
-   "depends_on": "eval:doc.tsp_date_filter_mode=='Custom'",
-   "fieldname": "tsp_custom_to",
-   "fieldtype": "Datetime",
-   "label": "Custom To"
+   "description": "GCS Settings record (bucket_type=Authenticated) whose bucket_name/project_id/credentials_json are used to upload each school's PDF. Reused as-is — no credentials duplicated here.",
+   "fieldname": "tsp_gcs_settings",
+   "fieldtype": "Link",
+   "label": "GCS Settings",
+   "options": "GCS Settings",
+   "reqd": 1
   },
   {
    "default": "10",
-   "description": "Hard cap on bytes BigQuery is allowed to scan for this query, in GB. Passed to BigQuery as maximum_bytes_billed — the query fails rather than run over this, so cost can never silently exceed the cap.",
+   "description": "Hard cap on bytes BigQuery is allowed to scan for this query, in GB.",
    "fieldname": "tsp_max_query_gb",
    "fieldtype": "Int",
    "label": "Max Query Size (GB)"
@@ -276,14 +263,14 @@
    "read_only": 1
   },
   {
-   "description": "OK, ERROR, or RUNNING while a run is in progress. RUNNING also acts as a lock: a new run started while this is RUNNING, and under 30 minutes old, is skipped rather than started concurrently.",
+   "description": "OK, ERROR, or RUNNING while a run is in progress. RUNNING under 10 minutes old also acts as a lock.",
    "fieldname": "tsp_last_run_status",
    "fieldtype": "Data",
    "label": "Last Run Status",
    "read_only": 1
   },
   {
-   "description": "Rolling tail of the last 50 runs (OK/ERROR + row counts). For troubleshooting only. No report data is stored here — the sheet, written by Apps Script, is the only place the data itself lives.",
+   "description": "Rolling tail of the last 50 runs (OK/ERROR + counts). For troubleshooting only.",
    "fieldname": "tsp_last_run_log",
    "fieldtype": "Long Text",
    "label": "Run Log",
@@ -293,7 +280,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-11-05 00:00:00.000000",
+ "modified": "2026-11-12 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "BigQuery Settings",

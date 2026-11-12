@@ -33,7 +33,7 @@ scheduler_events = {
         # Settings, so this is inert until someone turns it on. Fully
         # independent of the image-sync job above and of Teacher Bot.
         "0 15 * * 1": [
-            "tap_lms.bigquery.teacher.stats_poster.run_teacher_stats_poster",
+            "tap_lms.bigquery.teacher.teacher_reporting.run_weekly_extract",
         ],
         # Student feedback delivery (Glific feedback flow), three times a day.
         # Cron expressions use the Frappe system timezone (Asia/Kolkata):
