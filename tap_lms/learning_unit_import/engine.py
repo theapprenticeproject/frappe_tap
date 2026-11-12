@@ -124,6 +124,7 @@ class ImportConfig:
     # Activity codes from column A, in import order. Course Level week numbers
     # are allocated automatically from the existing maximum.
     unit_filters: list[str] = field(default_factory=list)
+    force_create: bool = False
     assignment_flow_spreadsheet_url: str = ""
     assignment_flow_sheet_name: str = ""
     dry_run: bool = True
@@ -777,13 +778,15 @@ def create_assignment(
         "assignment_translations": build_assignment_translations(row, assignment_name),
         "submission_media_links": build_submission_media_links(row),
     }
+    if ctx.config.force_create:
+        payload.pop("name")
     filters = [["name", "=", existing_name]] if existing_name else []
     return ctx.writer.upsert_by_filters(
         "Assignment",
         filters,
         payload,
         assignment_name,
-        force_create=not existing_name,
+        force_create=ctx.config.force_create or not existing_name,
     )
 
 
@@ -818,13 +821,15 @@ def create_video_class(
             }
         ],
     }
+    if ctx.config.force_create:
+        payload.pop("name")
     filters = [["name", "=", existing_name]] if existing_name else []
     return ctx.writer.upsert_by_filters(
         "VideoClass",
         filters,
         payload,
         video_name,
-        force_create=not existing_name,
+        force_create=ctx.config.force_create or not existing_name,
         update_existing=True if update_existing else None,
     )
 
@@ -872,13 +877,15 @@ def create_quiz(
         "status": ctx.config.default_status,
         "difficulty_tier": difficulty_tier,
     }
+    if ctx.config.force_create:
+        payload.pop("name")
     filters = [["name", "=", existing_name]] if existing_name else []
     created_quiz_name, status = ctx.writer.upsert_by_filters(
         "Quiz",
         filters,
         payload,
         quiz_name,
-        force_create=not existing_name,
+        force_create=ctx.config.force_create or not existing_name,
         update_existing=True if update_existing else None,
     )
     counts[status] += 1
@@ -909,6 +916,8 @@ def create_quiz_question(
             if translated_question
         ],
     }
+    if ctx.config.force_create:
+        question_payload.pop("name")
     question_filters = [["name", "=", existing_name]] if existing_name else []
     question_doc_name, status = ctx.writer.upsert_by_filters(
         "QuizQuestion",
@@ -916,7 +925,7 @@ def create_quiz_question(
         question_payload,
         question_key,
         log_result=False,
-        force_create=not existing_name,
+        force_create=ctx.config.force_create or not existing_name,
     )
 
     if ctx.config.dry_run:

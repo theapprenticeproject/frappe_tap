@@ -115,6 +115,7 @@ def build_config(run, row, source) -> ImportConfig:
         target_vertical=row.target_vertical or "",
         target_level=row.target_level or "",
         unit_filters=parse_unit_filters(row.unit_filters or ""),
+        force_create=bool(cint(row.force_create)),
         assignment_flow_spreadsheet_url=source.assignment_flow_spreadsheet_url or "",
         assignment_flow_sheet_name=source.assignment_flow_sheet_name or "",
         dry_run=bool(cint(run.dry_run)),

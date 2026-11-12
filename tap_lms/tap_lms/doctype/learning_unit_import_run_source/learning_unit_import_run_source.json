@@ -6,6 +6,7 @@
  "engine": "InnoDB",
  "field_order": [
   "source",
+  "force_create",
   "unit_filters",
   "status",
   "section_narrow",
@@ -31,6 +32,15 @@
    "label": "Source",
    "options": "Learning Unit Import Source",
    "reqd": 1
+  },
+  {
+   "columns": 1,
+   "default": "0",
+   "description": "Create new downstream assets and relink the existing Learning Unit to them",
+   "fieldname": "force_create",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Force Create"
   },
   {
    "columns": 4,
