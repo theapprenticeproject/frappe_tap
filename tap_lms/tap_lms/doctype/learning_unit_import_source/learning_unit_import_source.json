@@ -11,7 +11,6 @@
   "gcs_settings",
   "column_break_main",
   "course_level_program",
-  "unit_match_mode",
   "section_source",
   "spreadsheet_url",
   "master_sheet_name",
@@ -64,14 +63,6 @@
    "label": "Course Level Program",
    "options": "Program",
    "reqd": 1
-  },
-  {
-   "default": "Exact",
-   "description": "How run unit filters are matched against column A: exactly, or as a prefix",
-   "fieldname": "unit_match_mode",
-   "fieldtype": "Select",
-   "label": "Unit Match Mode",
-   "options": "Exact\nPrefix"
   },
   {
    "fieldname": "section_source",

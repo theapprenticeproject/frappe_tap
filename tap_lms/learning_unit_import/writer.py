@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 import frappe
+from frappe.utils import cint
 
 from tap_lms.learning_unit_import.engine import slug
 
@@ -26,6 +27,7 @@ class FrappeWriter:
         self.dry_run = dry_run
         self.update_existing = update_existing
         self.log = log
+        self._dry_run_max_weeks: dict[str, int] = {}
 
     def upsert_by_filters(
         self,
@@ -78,22 +80,52 @@ class FrappeWriter:
         self,
         course_level_name: str,
         learning_unit_name: str,
-        week_no: int,
         idx: int,
-    ) -> str:
+    ) -> tuple[str, int]:
         course_level = frappe.get_doc("Course Level", course_level_name)
         for row in course_level.get("learning_units") or []:
             if row.learning_unit == learning_unit_name:
-                row.week_no = int(week_no)
-                course_level.save()
-                return "updated"
+                return "skipped", cint(row.week_no)
+
+        assigned_week_no = max(
+            [cint(row.week_no) for row in course_level.get("learning_units") or []] or [0]
+        ) + 1
 
         course_level.append(
             "learning_units",
-            {"learning_unit": learning_unit_name, "week_no": int(week_no), "idx": int(idx)},
+            {"learning_unit": learning_unit_name, "week_no": assigned_week_no, "idx": int(idx)},
         )
         course_level.save()
-        return "created"
+        return "created", assigned_week_no
+
+    def get_next_course_level_week(
+        self,
+        course_level_name: str,
+        course_level_filters: list[list[Any]],
+    ) -> int:
+        resolved_name = course_level_name
+        if self.dry_run:
+            existing = frappe.get_all("Course Level", filters=course_level_filters, pluck="name", limit=1)
+            resolved_name = str(existing[0]) if existing else ""
+            cache_key = resolved_name or repr(course_level_filters)
+            if cache_key in self._dry_run_max_weeks:
+                self._dry_run_max_weeks[cache_key] += 1
+                return self._dry_run_max_weeks[cache_key]
+        else:
+            # The lock is held until the activity result is committed, preventing
+            # concurrent imports from reserving the same next week.
+            frappe.db.get_value("Course Level", resolved_name, "name", for_update=True)
+
+        max_week = 0
+        if resolved_name:
+            course_level = frappe.get_doc("Course Level", resolved_name)
+            max_week = max(
+                [cint(row.week_no) for row in course_level.get("learning_units") or []] or [0]
+            )
+        next_week = max_week + 1
+        if self.dry_run:
+            self._dry_run_max_weeks[cache_key] = next_week
+        return next_week
 
     def rollback(self) -> None:
         frappe.db.rollback()
