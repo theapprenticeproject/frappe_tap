@@ -7,6 +7,24 @@ from frappe.model.document import Document
 from tap_lms.learning_unit_import.sheets import parse_sheet_ref
 
 
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def gcs_settings_query(doctype, txt, searchfield, start, page_len, filters):
+	search_term = f"%{txt}%"
+	return frappe.get_list(
+		"GCS Settings",
+		or_filters={
+			"name": ["like", search_term],
+			"project_id": ["like", search_term],
+		},
+		fields=["name", "project_id"],
+		limit_start=start,
+		limit_page_length=page_len,
+		order_by="modified desc",
+		as_list=True,
+	)
+
+
 class LearningUnitImportSource(Document):
 	def validate(self):
 		for fieldname in ("spreadsheet_url", "assignment_flow_spreadsheet_url"):

@@ -1,24 +1,28 @@
 # Copyright (c) 2026, Techt4dev and contributors
 # For license information, please see license.txt
 
-import csv
-import io
+import re
+from io import BytesIO
 
 import frappe
 from frappe.model.document import Document
 from frappe.utils import now_datetime
 from google.auth.transport.requests import AuthorizedSession
+from openpyxl import Workbook
+from openpyxl.styles import Font
 
 from tap_lms.imgana.submission import enqueue_submissions_batch
 from tap_lms.onboarding.backend_upload_utils import (
-	FAILED_ROWS_GCP_PROJECT_ID,
 	get_google_service_account_credentials,
-	upload_bytes_to_gcs,
+	upload_bytes_to_google_drive,
 )
 
 # Built by scripts/private/list_prod_learning_unit_names_to_google_sheet.py:
 # one tab per "<vertical> <level>".
 SHEETS_URL = "https://sheets.googleapis.com/v4/spreadsheets/1nSN72ikEqM7U0gMl-3AoOV8KeHAzNZvK_zHCNcT6B34"
+ON_DEMAND_EVALUATION_DRIVE_FOLDER_ID = "13Rk38NrjFonIQ3BmpOrIC-rNItbo1wQU"
+XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+ILLEGAL_XLSX_CHARACTERS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 
 
 class OnDemandEvaluation(Document):
@@ -136,18 +140,31 @@ def check_queued_evaluations():
 	"""Cron: complete Queued jobs once none of their submissions is still Processing."""
 	for name in frappe.get_all("On Demand Evaluation", filters={"status": "Queued"}, pluck="name"):
 		if not frappe.db.exists("Submission", {"rubric_eval_job": name, "rubric_eval_status": "Processing"}):
-			url = upload_bytes_to_gcs(
-				_build_csv(name), f"rubric/{name}.csv", FAILED_ROWS_GCP_PROJECT_ID, content_type="text/csv"
+			doc = frappe.get_doc("On Demand Evaluation", name)
+			completed_at = now_datetime()
+			file_name = _build_output_file_name(doc.program, doc.unit_activity_no, completed_at)
+			url = upload_bytes_to_google_drive(
+				_build_xlsx(name),
+				file_name,
+				ON_DEMAND_EVALUATION_DRIVE_FOLDER_ID,
+				XLSX_CONTENT_TYPE,
 			)
 			frappe.db.set_value("On Demand Evaluation", name, {
 				"status": "Completed",
-				"completed_at": now_datetime(),
+				"completed_at": completed_at,
 				"output_file_url": url,
 			})
 			frappe.db.commit()
 
 
-def _build_csv(job_name):
+def _build_output_file_name(program, unit_activity_no, timestamp):
+	def clean(value):
+		return re.sub(r"[/\x00-\x1f]+", "_", str(value or "").strip()).strip(" _")
+
+	return f"{clean(program)}_{clean(unit_activity_no)}_{timestamp.strftime('%Y%m%d_%H%M%S')}.xlsx"
+
+
+def _build_xlsx(job_name):
 	submissions = frappe.get_all(
 		"Submission",
 		filters={"rubric_eval_job": job_name},
@@ -178,9 +195,14 @@ def _build_csv(job_name):
 	for i in range(1, max_skills + 1):
 		header += [f"Skill {i}", f"Grade Value {i}", f"Observation {i}"]
 
-	buffer = io.StringIO()
-	writer = csv.writer(buffer)
-	writer.writerow(header)
+	workbook = Workbook()
+	worksheet = workbook.active
+	worksheet.title = "Evaluation Results"
+	worksheet.freeze_panes = "A2"
+	worksheet.append(header)
+	for cell in worksheet[1]:
+		cell.font = Font(bold=True)
+
 	for s in submissions:
 		rows = rubrics.get(s.name, [])
 		first = rows[0] if rows else frappe._dict()
@@ -193,5 +215,12 @@ def _build_csv(job_name):
 		]
 		for r in rows:
 			line += [r.skill, r.grade_value, r.observation]
-		writer.writerow(line)
-	return buffer.getvalue().encode("utf-8")
+		worksheet.append([
+			ILLEGAL_XLSX_CHARACTERS.sub("", value) if isinstance(value, str) else value
+			for value in line
+		])
+
+	worksheet.auto_filter.ref = worksheet.dimensions
+	buffer = BytesIO()
+	workbook.save(buffer)
+	return buffer.getvalue()
