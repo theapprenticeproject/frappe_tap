@@ -204,9 +204,18 @@ class Writer(Protocol):
         payload: dict[str, Any],
         label: str,
         log_result: bool = True,
+        force_create: bool = False,
+        update_existing: bool | None = None,
     ) -> tuple[str, str]: ...
 
     def update_doc(self, doctype: str, name: str, values: dict[str, Any]) -> None: ...
+
+    def get_learning_unit_bundle(
+        self,
+        course_level_name: str,
+        course_level_filters: list[list[Any]],
+        learning_unit_filters: list[list[Any]],
+    ) -> dict[str, Any]: ...
 
     def link_learning_unit_to_course_level(
         self, course_level_name: str, learning_unit_name: str, idx: int
@@ -614,24 +623,49 @@ def import_activity_bundle(
         )
 
     course_level_name = ""
+    course_filters = course_level_filters(ctx.config.course_level_program, activity, course_vertical)
     if config.link_learning_units_to_course_level:
         course_level_name, status = create_course_level(ctx, activity, course_vertical)
         counts[status] += 1
         activity.week_no = ctx.writer.get_next_course_level_week(
             course_level_name,
-            course_level_filters(ctx.config.course_level_program, activity, course_vertical),
+            course_filters,
         )
 
-    assignment_name, status = create_assignment(ctx, activity, course_vertical)
+    bundle = ctx.writer.get_learning_unit_bundle(
+        course_level_name,
+        course_filters,
+        learning_unit_filters(activity, config.difficulty_tier),
+    )
+
+    assignment_name, status = create_assignment(
+        ctx,
+        activity,
+        course_vertical,
+        bundle.get("assignment") or "",
+    )
     counts[status] += 1
 
-    video_name, status = create_video_class(ctx, activity, course_vertical, assignment_name)
+    video_name, status = create_video_class(
+        ctx,
+        activity,
+        course_vertical,
+        assignment_name,
+        bundle.get("video_class") or "",
+        bool(bundle.get("video_class") and not bundle.get("assignment")),
+    )
     counts[status] += 1
 
-    quiz_name = ""
+    quiz_name = bundle.get("quiz") or ""
     quiz_questions = parse_activity_quiz(ctx, activity)
     if quiz_questions:
-        quiz_name, quiz_counts = create_quiz(ctx, activity, quiz_questions)
+        quiz_name, quiz_counts = create_quiz(
+            ctx,
+            activity,
+            quiz_questions,
+            quiz_name,
+            bundle.get("quiz_questions") or {},
+        )
         for key, value in quiz_counts.items():
             counts[key] = counts.get(key, 0) + value
     else:
@@ -644,6 +678,14 @@ def import_activity_bundle(
         course_level_name,
         video_name,
         quiz_name,
+        bundle.get("learning_unit") or "",
+        bool(
+            bundle.get("learning_unit")
+            and (
+                video_name != (bundle.get("video_class") or "")
+                or quiz_name != (bundle.get("quiz") or "")
+            )
+        ),
     )
     counts[status] += 1
 
@@ -715,6 +757,7 @@ def create_assignment(
     ctx: ImportContext,
     activity: ActivityRow,
     course_vertical: str,
+    existing_name: str,
 ) -> tuple[str, str]:
     row = activity.row
     difficulty_tier = ctx.config.difficulty_tier
@@ -734,11 +777,14 @@ def create_assignment(
         "assignment_translations": build_assignment_translations(row, assignment_name),
         "submission_media_links": build_submission_media_links(row),
     }
-    filters = [
-        ["assignment_name", "=", assignment_name],
-        ["difficulty_tier", "=", difficulty_tier],
-    ]
-    return ctx.writer.upsert_by_filters("Assignment", filters, payload, assignment_name)
+    filters = [["name", "=", existing_name]] if existing_name else []
+    return ctx.writer.upsert_by_filters(
+        "Assignment",
+        filters,
+        payload,
+        assignment_name,
+        force_create=not existing_name,
+    )
 
 
 def create_video_class(
@@ -746,6 +792,8 @@ def create_video_class(
     activity: ActivityRow,
     course_vertical: str,
     assignment_name: str,
+    existing_name: str,
+    update_existing: bool,
 ) -> tuple[str, str]:
     row = activity.row
     difficulty_tier = ctx.config.difficulty_tier
@@ -770,30 +818,40 @@ def create_video_class(
             }
         ],
     }
-    filters = [
-        ["video_name", "=", video_name],
-        ["difficulty_tier", "=", difficulty_tier],
-    ]
-    return ctx.writer.upsert_by_filters("VideoClass", filters, payload, video_name)
+    filters = [["name", "=", existing_name]] if existing_name else []
+    return ctx.writer.upsert_by_filters(
+        "VideoClass",
+        filters,
+        payload,
+        video_name,
+        force_create=not existing_name,
+        update_existing=True if update_existing else None,
+    )
 
 
 def create_quiz(
     ctx: ImportContext,
     activity: ActivityRow,
     questions: list[QuizQuestionData],
+    existing_name: str,
+    existing_questions: dict[int, str],
 ) -> tuple[str, dict[str, int]]:
     row = activity.row
     difficulty_tier = ctx.config.difficulty_tier
     quiz_name = f"{activity.activity_name} Quiz"
     counts = {"created": 0, "updated": 0, "skipped": 0}
+    update_existing = False
 
     question_links = []
     for question in questions:
+        existing_question = existing_questions.get(question.question_number) or ""
         question_name, status = create_quiz_question(
             ctx,
             question,
             make_question_key(activity.unit_activity, activity.activity_name, question.question_number),
+            existing_question,
         )
+        update_existing = update_existing or not existing_question
         counts[status] += 1
         question_links.append(
             {
@@ -814,11 +872,15 @@ def create_quiz(
         "status": ctx.config.default_status,
         "difficulty_tier": difficulty_tier,
     }
-    filters = [
-        ["quiz_name", "=", quiz_name],
-        ["difficulty_tier", "=", difficulty_tier],
-    ]
-    created_quiz_name, status = ctx.writer.upsert_by_filters("Quiz", filters, payload, quiz_name)
+    filters = [["name", "=", existing_name]] if existing_name else []
+    created_quiz_name, status = ctx.writer.upsert_by_filters(
+        "Quiz",
+        filters,
+        payload,
+        quiz_name,
+        force_create=not existing_name,
+        update_existing=True if update_existing else None,
+    )
     counts[status] += 1
     return created_quiz_name, counts
 
@@ -827,6 +889,7 @@ def create_quiz_question(
     ctx: ImportContext,
     question: QuizQuestionData,
     question_key: str,
+    existing_name: str,
 ) -> tuple[str, str]:
     question_payload = {
         "name": make_doc_name("QQ", question_key),
@@ -846,13 +909,14 @@ def create_quiz_question(
             if translated_question
         ],
     }
-    question_filters = [["question_name", "=", question_key]]
+    question_filters = [["name", "=", existing_name]] if existing_name else []
     question_doc_name, status = ctx.writer.upsert_by_filters(
         "QuizQuestion",
         question_filters,
         question_payload,
         question_key,
         log_result=False,
+        force_create=not existing_name,
     )
 
     if ctx.config.dry_run:
@@ -926,6 +990,8 @@ def create_learning_unit(
     course_level_name: str,
     video_name: str,
     quiz_name: str,
+    existing_name: str,
+    update_existing: bool,
 ) -> tuple[str, str]:
     row = activity.row
     difficulty_tier = ctx.config.difficulty_tier
@@ -968,12 +1034,23 @@ def create_learning_unit(
         "course_level": course_level_for_name,
         "week_no": activity.week_no,
     }
-    filters = [
-        ["unit_name", "=", activity_name],
+    filters = [["name", "=", existing_name]] if existing_name else []
+    return ctx.writer.upsert_by_filters(
+        "LearningUnit",
+        filters,
+        payload,
+        unit_activity,
+        force_create=not existing_name,
+        update_existing=True if update_existing else None,
+    )
+
+
+def learning_unit_filters(activity: ActivityRow, difficulty_tier: str) -> list[list[Any]]:
+    return [
+        ["unit_name", "=", activity.activity_name],
         ["difficulty_tier", "=", difficulty_tier],
         ["order", "=", activity.row_number],
     ]
-    return ctx.writer.upsert_by_filters("LearningUnit", filters, payload, unit_activity)
 
 
 def parse_activity_quiz(ctx: ImportContext, activity: ActivityRow) -> list[QuizQuestionData]:
