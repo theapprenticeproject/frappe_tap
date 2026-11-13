@@ -850,12 +850,11 @@ def teacher_report(school_id, api_key):
         blob = _upload_pdf_to_gcs(gcs_settings, school_id, pdf_bytes)
         url = _signed_url(blob)
         # Some downstream platforms (e.g. certain WhatsApp/Glific senders)
-        # only recognize a URL as "a PDF to send" if it's wrapped as a
-        # markdown link whose visible text ends in a #file.pdf-style
-        # anchor. We wrap the SAME per-request signed url generated above
-        # -- never a hardcoded example -- so "sheet" is just that one
-        # markdown link, not the raw url plus a second copy of it.
-        sheet_url = f"[#file.pdf]({url}#file.pdf)"
+        # only recognize a URL as "a PDF to send" if it ends in a
+        # #file.pdf-style anchor. We append that suffix directly onto the
+        # SAME per-request signed url generated above -- never a
+        # hardcoded example -- so "sheet" is just that one URL.
+        sheet_url = f"{url}#file.pdf"
 
         return {
             "status": "ok",
