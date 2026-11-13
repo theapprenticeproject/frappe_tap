@@ -8,3 +8,4 @@ pandas
 pyarrow
 weasyprint
 jinja2
+db-dtypes
