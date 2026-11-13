@@ -28,11 +28,11 @@ scheduler_events = {
         ],
         # Teacher Stats Poster: runs the read-only BigQuery query and pushes
         # school-level stats to the Apps Script Web App. Every Monday at
-        # 3 pm IST (Frappe system timezone). The job exits immediately
+        # 3 am IST (Frappe system timezone). The job exits immediately
         # unless "Enable Teacher Stats Poster" is checked in BigQuery
         # Settings, so this is inert until someone turns it on. Fully
         # independent of the image-sync job above and of Teacher Bot.
-        "0 15 * * 1": [
+        "0 3 * * 1": [
             "tap_lms.bigquery.teacher.teacher_reporting.run_weekly_extract",
         ],
         # Student feedback delivery (Glific feedback flow), three times a day.

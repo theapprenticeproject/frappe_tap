@@ -1,33 +1,10 @@
-"""
-Teacher Reporting.
-
-Weekly: pulls per-student engagement rows from BigQuery (no reliable name
-column there -- grade still comes from BigQuery, but names are resolved in
-bulk against the Student doctype by student_id), writes one Parquet file
-per school_id to a fixed, permanent path via an atomic staging-dir swap.
-Triggered every Monday at 3 pm IST by hooks.py (run_weekly_extract).
-
-On-demand: Glific calls teacher_report(school_id, api_key); reads that
-school's parquet straight off disk, renders a PDF, uploads it to GCS
-(credentials/bucket from GCS Settings) at a fixed per-school path with
-Content-Type: application/pdf, and returns a signed URL.
-
-Maintenance: clear_parquet_cache() lets an admin wipe the on-disk parquet
-cache (live + staging + missing.jsonl) from the BigQuery Settings doctype,
-safely -- it never deletes in place, only ever renames-then-removes, so a
-crash mid-clear can't leave the live/ directory half-deleted.
-
-Only existing doctypes are used: BigQuery Settings, GCS Settings, Student,
-School, District.
-"""
-
-import hmac
 import json
+import hmac
 import re
 import shutil
-import time
 import uuid
-from datetime import date, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import timedelta
 from pathlib import Path
 
 import frappe
@@ -36,10 +13,26 @@ from frappe.utils import cint, now_datetime
 SETTINGS_DOCTYPE = "BigQuery Settings"
 
 LOCK_STALE_MINUTES = 10
-STAGING_DIRNAME = ".staging/teacher_reporting"
-LIVE_DIRNAME = "live/teacher_reporting"
 STUDENT_CHUNK_SIZE = 5000
-GRADE_ORDER_FALLBACK = 99
+SCHOOL_CHUNK_SIZE = 5000
+DISTRICT_CHUNK_SIZE = 5000
+
+_LEGACY_STAGING_DIRNAME = ".staging/teacher_reporting"
+_LEGACY_LIVE_DIRNAME = "live/teacher_reporting"
+_LEGACY_LIVE_PARENT = "live"
+_LEGACY_PREVIOUS_DIRNAME = "teacher_reporting.previous"
+_LEGACY_MISSING_FILENAME = "missing.jsonl"
+
+MANIFEST_FILENAME = "pdf_manifest.json"
+
+DEFAULT_MAX_WORKERS = 8
+DEFAULT_BATCH_SIZE = 200
+HARD_MAX_WORKERS = 32
+HARD_MAX_BATCH_SIZE = 2000
+
+DEFAULT_SIGNED_URL_TTL_MINUTES = 10080
+HARD_MAX_SIGNED_URL_TTL_MINUTES = 10080
+DEFAULT_STATS_TTL_DAYS = 7
 
 REQUIRED_SETTING_FIELDS = (
     "project_id", "credentials_json", "dataset_id", "contacts_table",
@@ -47,47 +40,20 @@ REQUIRED_SETTING_FIELDS = (
     "parquet_dir", "gcs_settings_name", "secret",
 )
 
-# --------------------------------------------------------------------------
-# school_id validation
-#
-# Only two known-good shapes exist in real data:
-#   1. "SC" + exactly 8 digits           e.g. SC00005086
-#   2. 2 letters + 2 letters + 2 alnum   e.g. GHBA23LT, RABA71OX
-#
-# Matched as a WHOLE string (fullmatch) -- no leading/trailing junk
-# tolerated. Anything else (WhatsApp message text, mixed-in names,
-# stray characters, wrong length) is rejected outright rather than
-# "looking plausible".
-# --------------------------------------------------------------------------
-
 _SCHOOL_ID_PATTERNS = (
     re.compile(r"^SC\d{8}$"),
     re.compile(r"^[A-Z]{2}[A-Z]{2}[A-Z0-9]{2}$"),
 )
-_MAX_SCHOOL_ID_LEN_IN_LOG = 80  # truncate junk before writing to missing.jsonl
-
-# --------------------------------------------------------------------------
-# student_id validation (gates the bulk LMS name lookup)
-#
-# BigQuery's student_id values ultimately originate from end users and can
-# contain anything -- stray whitespace, embedded newlines, free text, etc.
-# Before using them as a SQL "in" filter against the Student doctype we
-# only keep values that look like real LMS student ids, i.e. the same
-# "ST" + 8 digits shape autoname() generates. Anything else is dropped
-# from the lookup (it will simply fail to resolve to a name, same as a
-# genuinely unmatched id) rather than passed through to the database.
-# --------------------------------------------------------------------------
+_MAX_SCHOOL_ID_LEN_IN_LOG = 80
 
 _STUDENT_ID_PATTERN = re.compile(r"^ST\d{8}$")
 
 
 def _normalize_school_id(value):
-    """Uppercase + strip. Does NOT validate shape."""
     return (value or "").strip().upper()
 
 
 def _looks_like_school_id(value):
-    """value must already be normalized (see _normalize_school_id)."""
     if not value:
         return False
     if "\n" in value or "\r" in value:
@@ -102,10 +68,6 @@ def _looks_like_student_id(value):
         return False
     return bool(_STUDENT_ID_PATTERN.fullmatch(value))
 
-
-# --------------------------------------------------------------------------
-# settings
-# --------------------------------------------------------------------------
 
 def get_reporting_settings():
     settings = frappe.get_single(SETTINGS_DOCTYPE)
@@ -124,7 +86,22 @@ def get_reporting_settings():
         "gcs_settings_name": settings.get("tsp_gcs_settings"),
         "secret": settings.get_password("tsp_secret", raise_exception=False),
         "max_query_gb": cint(settings.get("tsp_max_query_gb")) or 10,
+        "max_workers": _bounded(cint(settings.get("tsp_max_workers")), DEFAULT_MAX_WORKERS, HARD_MAX_WORKERS),
+        "batch_size": _bounded(cint(settings.get("tsp_batch_size")), DEFAULT_BATCH_SIZE, HARD_MAX_BATCH_SIZE),
+        "signed_url_ttl_minutes": _bounded(
+            cint(settings.get("tsp_signed_url_ttl_minutes")),
+            DEFAULT_SIGNED_URL_TTL_MINUTES,
+            HARD_MAX_SIGNED_URL_TTL_MINUTES,
+        ),
+        "stats_ttl_days": cint(settings.get("tsp_stats_ttl_days")) or DEFAULT_STATS_TTL_DAYS,
     })
+
+
+def _bounded(value, default, hard_max):
+    value = cint(value)
+    if value <= 0:
+        value = default
+    return min(value, hard_max)
 
 
 def _required_fields_ok(settings):
@@ -144,10 +121,6 @@ def _get_gcs_settings(gcs_settings_name):
     })
 
 
-# --------------------------------------------------------------------------
-# BigQuery
-# --------------------------------------------------------------------------
-
 def get_bq_client(settings):
     from google.cloud import bigquery
     from google.oauth2 import service_account
@@ -162,10 +135,6 @@ def get_bq_client(settings):
     return bigquery.Client(project=settings.project_id, credentials=credentials)
 
 
-# NOTE: grade is sourced from BigQuery's raw_fields (it is reliable there).
-# Student *names* are deliberately NOT selected here -- BQ's own name data
-# is not trustworthy, so names are resolved afterwards in bulk against the
-# Student doctype, keyed by student_id (see _resolve_student_names_bulk).
 QUERY_TEMPLATE = """
 WITH students AS (
     SELECT
@@ -246,26 +215,12 @@ def _run_bq_query(settings, start, end, client=None):
     return df
 
 
-# --------------------------------------------------------------------------
-# bulk LMS name resolution (by student_id)
-# --------------------------------------------------------------------------
-
 _NAME_WHITESPACE_RE = re.compile(r"\s+")
 _NAME_LETTER_RUN_RE = re.compile(r"[A-Za-z]+")
 _MAX_NAME_LEN = 120
 
 
 def _titlecase_name(name):
-    """Normalize an LMS name value into clean 'First Last' title case.
-
-    Safe on any input -- never raises. Handles non-string values (coerces
-    to str), None/blank, excess/irregular whitespace (double spaces,
-    tabs, newlines -- all collapsed to single spaces so multi-word names
-    come out clean), absurdly long junk strings (hard-capped), and mixed
-    casing. Capitalizes the first letter of every run of letters, so
-    names with hyphens or apostrophes are capitalized correctly on both
-    sides (e.g. "anne-marie o'brien" -> "Anne-Marie O'Brien").
-    """
     try:
         name = str(name) if name is not None else ""
     except Exception:
@@ -285,18 +240,6 @@ def _titlecase_name(name):
 
 
 def _resolve_student_names_bulk(student_ids):
-    """student_ids -> {student_id: title-cased name}. Missing/blank names are absent.
-
-    Safety: every id is normalized (stripped) and must match the LMS
-    student_id shape (ST + 8 digits) before it is allowed into the SQL
-    "in" filter -- BigQuery-sourced ids are user-influenced data and are
-    not trusted as-is. Ids are also de-duplicated before chunking so a
-    noisy BQ extract can't inflate the number/size of lookup queries.
-
-    Optimization: frappe.get_all's "in" filter is parameterized by the
-    framework (safe against injection), de-duping + chunking keeps each
-    query bounded in size, and only the two needed columns are fetched.
-    """
     seen = set()
     clean_ids = []
     for sid in student_ids:
@@ -330,223 +273,71 @@ def _attach_resolved_names(df, name_map):
     return df
 
 
-# --------------------------------------------------------------------------
-# weekly extract: staging write + atomic swap
-# --------------------------------------------------------------------------
-
-def _validate_chunk(df):
+def _validate_and_normalize(df):
     df = df[(df["school_id"].str.strip() != "") & (df["student_id"].str.strip() != "")].copy()
-    # Normalize school_id up front (uppercase + strip) so "sc00000678" and
-    # "SC00000678" are the same school, and downstream grouping/validation
-    # all see the normalized value.
     df["school_id"] = df["school_id"].map(_normalize_school_id)
     return df
 
 
-def _write_parquet_per_school(df, staging_dir):
-    import pyarrow as pa
-    import pyarrow.parquet as pq
+def _resolve_school_names_bulk(school_ids):
+    seen = set()
+    clean_ids = []
+    for sid in school_ids:
+        sid = _normalize_school_id(sid)
+        if sid and sid not in seen and _looks_like_school_id(sid):
+            seen.add(sid)
+            clean_ids.append(sid)
 
-    written = {}
-    failures = []
-    cols = ["student_id", "student_name", "grade", "watched_video", "shared_work"]
+    if not clean_ids:
+        return {}
 
-    for school_id, chunk in df.groupby("school_id", sort=False):
-        if not _looks_like_school_id(school_id):
-            logged_id = school_id if len(school_id) <= _MAX_SCHOOL_ID_LEN_IN_LOG else (
-                school_id[:_MAX_SCHOOL_ID_LEN_IN_LOG] + "...<truncated>"
-            )
-            failures.append({"school_id": logged_id, "reason": "school_id_malformed", "rows": int(len(chunk))})
+    school_rows = []
+    for i in range(0, len(clean_ids), SCHOOL_CHUNK_SIZE):
+        chunk = clean_ids[i:i + SCHOOL_CHUNK_SIZE]
+        school_rows.extend(frappe.get_all(
+            "School",
+            filters={"keyword": ["in", chunk]},
+            fields=["keyword", "name1", "district", "state"],
+        ))
+
+    by_keyword = {}
+    for row in school_rows:
+        kw = _normalize_school_id(row.keyword)
+        if kw and kw not in by_keyword:
+            by_keyword[kw] = row
+
+    districts_needing_state = sorted({
+        row.district for row in by_keyword.values()
+        if row.district and not (row.state or "").strip()
+    })
+    district_state = {}
+    for i in range(0, len(districts_needing_state), DISTRICT_CHUNK_SIZE):
+        chunk = districts_needing_state[i:i + DISTRICT_CHUNK_SIZE]
+        for row in frappe.get_all(
+            "District",
+            filters={"name": ["in", chunk]},
+            fields=["name", "state"],
+        ):
+            district_state[row.name] = (row.state or "").strip()
+
+    resolved = {}
+    for sid in clean_ids:
+        row = by_keyword.get(sid)
+        if not row:
             continue
-        try:
-            table = pa.Table.from_pandas(chunk[cols].reset_index(drop=True), preserve_index=False)
-            pq.write_table(table, staging_dir / f"{school_id}.parquet")
-            written[school_id] = {"rows": int(len(chunk))}
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), f"teacher_reporting: write failed for {school_id}")
-            failures.append({"school_id": school_id, "reason": "parquet_write_failed", "rows": int(len(chunk))})
-
-    return written, failures
-
-
-def _write_missing(parquet_dir, write_failures, unresolved_total):
-    path = Path(parquet_dir) / "missing.jsonl"
-    tmp = path.with_suffix(".jsonl.tmp")
-    with tmp.open("w") as fh:
-        for entry in write_failures:
-            fh.write(json.dumps({
-                "school_id": entry["school_id"],
-                "reason": entry["reason"],
-                "rows": entry.get("rows"),
-            }) + "\n")
-        if unresolved_total:
-            fh.write(json.dumps({
-                "school_id": None,
-                "reason": f"{unresolved_total} student rows had no resolvable LMS name this week",
-            }) + "\n")
-    tmp.replace(path)
-
-
-def _format_date_range_label(start, end):
-    # e.g. "5 Nov - 11 Nov 2026". Day has no leading zero; month is short
-    # form; the year is shown once, at the end, even when the range spans
-    # two different months.
-    start_label = f"{start.day} {start.strftime('%b')}"
-    end_label = f"{end.day} {end.strftime('%b')} {end.year}"
-    return f"{start_label} - {end_label}"
-
-
-def _write_manifest_into(staging_dir, written, start, end):
-    manifest = {
-        "week_start": start.isoformat(),
-        "week_end": end.isoformat(),
-        "date_range_label": _format_date_range_label(start, end),
-        "generated_at": now_datetime().isoformat(),
-        "schools": written,
-    }
-    tmp = staging_dir / "manifest.json.tmp"
-    tmp.write_text(json.dumps(manifest, separators=(",", ":")))
-    tmp.replace(staging_dir / "manifest.json")
-
-
-def _swap_staging_live(base, staging, live):
-    live.parent.mkdir(parents=True, exist_ok=True)
-    previous = base / "live" / "teacher_reporting.previous"
-    if previous.exists():
-        shutil.rmtree(previous, ignore_errors=True)
-    if live.exists():
-        live.rename(previous)
-    staging.rename(live)
-    if previous.exists():
-        shutil.rmtree(previous, ignore_errors=True)
-
-
-def _acquire_lock():
-    settings = frappe.get_single(SETTINGS_DOCTYPE)
-    status = settings.get("tsp_last_run_status")
-    started_at = settings.get("tsp_last_run_at")
-    if status == "RUNNING" and started_at:
-        elapsed = (now_datetime() - frappe.utils.get_datetime(started_at)).total_seconds() / 60
-        if elapsed < LOCK_STALE_MINUTES:
-            return False
-    settings.tsp_last_run_status = "RUNNING"
-    settings.tsp_last_run_at = now_datetime()
-    settings.save(ignore_permissions=True)
-    frappe.db.commit()
-    return True
-
-
-def _persist_run(status, schools=0, missing=0, rows=0, error=None):
-    settings = frappe.get_single(SETTINGS_DOCTYPE)
-    settings.tsp_last_run_at = now_datetime()
-    settings.tsp_last_run_status = status
-    if status == "OK":
-        log_line = f"{now_datetime()} — OK schools={schools} rows={rows} missing={missing}"
-    else:
-        log_line = f"{now_datetime()} — ERROR: {error}"
-    existing = settings.get("tsp_last_run_log") or ""
-    lines = (existing.splitlines() + [log_line])[-50:]
-    settings.tsp_last_run_log = "\n".join(lines)
-    settings.save(ignore_permissions=True)
-    frappe.db.commit()
-
-
-def run_weekly_extract():
-    """Entry point for the Monday 3pm IST scheduler hook (see hooks.py).
-
-    No-ops immediately unless "Enable Teacher Reporting" is checked in
-    BigQuery Settings, so wiring this into cron is inert by default.
-    """
-    settings = get_reporting_settings()
-    if not settings.enabled:
-        return {"status": "disabled"}
-
-    ok, missing_fields = _required_fields_ok(settings)
-    if not ok:
-        _persist_run("ERROR", error=f"Missing settings: {', '.join(missing_fields)}")
-        return {"status": "failure", "message": f"Missing settings: {', '.join(missing_fields)}"}
-
-    if not _acquire_lock():
-        return {"status": "skipped", "message": "already running"}
-
-    base = Path(settings.parquet_dir)
-    staging = base / STAGING_DIRNAME
-    live = base / LIVE_DIRNAME
-
-    try:
-        start, end = _last_week_window(now_datetime())
-        df = _run_bq_query(settings, start, end)
-        df = _validate_chunk(df)
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "teacher_reporting: query failed")
-        _persist_run("ERROR", error="BigQuery extract failed")
-        return {"status": "failure"}
-
-    try:
-        distinct_ids = df["student_id"].dropna().unique().tolist()
-        name_map = _resolve_student_names_bulk(distinct_ids)
-        df = _attach_resolved_names(df, name_map)
-
-        if staging.exists():
-            shutil.rmtree(staging)
-        staging.mkdir(parents=True)
-
-        written, failures = _write_parquet_per_school(df, staging)
-        unresolved_count = int((df["student_name"] == "").sum())
-        _write_missing(base, failures, unresolved_count)
-        _write_manifest_into(staging, written, start, end)
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "teacher_reporting: staging write failed")
-        _persist_run("ERROR", error="Staging write failed")
-        return {"status": "failure"}
-
-    try:
-        _swap_staging_live(base, staging, live)
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "teacher_reporting: swap failed")
-        _persist_run("ERROR", error="Staging-to-live swap failed")
-        return {"status": "failure"}
-
-    _persist_run("OK", schools=len(written), missing=len(failures), rows=len(df))
-    return {"status": "success", "schools": len(written), "missing": len(failures), "rows": int(len(df))}
-
-
-# --------------------------------------------------------------------------
-# on-demand: school/district/state resolution (LMS)
-# --------------------------------------------------------------------------
-
-def _resolve_school_names(school_id):
-    school = frappe.db.get_value(
-        "School", {"keyword": school_id}, ["name1", "district", "state"], as_dict=True
-    )
-    if not school:
-        return "", "", ""
-    school_name = (school.name1 or "").strip()
-    state_name = (school.state or "").strip()
-    district_name = ""
-    if school.district:
-        district_name = school.district
-        if not state_name:
-            state_name = (frappe.db.get_value("District", school.district, "state") or "").strip()
-    return school_name, district_name, state_name
+        school_name = (row.name1 or "").strip()
+        if not school_name:
+            continue
+        state_name = (row.state or "").strip()
+        district_name = row.district or ""
+        if district_name and not state_name:
+            state_name = district_state.get(district_name, "")
+        resolved[sid] = (school_name, district_name, state_name)
+    return resolved
 
 
 def _clean_school_display_name(name):
     return re.sub(r"\s+", " ", (name or "")).strip()
-
-
-# --------------------------------------------------------------------------
-# on-demand: read parquet + aggregates
-# --------------------------------------------------------------------------
-
-def _read_manifest(live_dir):
-    path = live_dir / "manifest.json"
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return {}
 
 
 def _compute_school_aggregates(df):
@@ -561,26 +352,7 @@ def _grade_sort_key(grade_label):
     return (0, int(digits.group())) if digits else (1, grade_label or "")
 
 
-def _status_rank(watched, shared):
-    """Mirrors reportGen_statusRank_ in the Apps Script: both ticked first,
-    then one ticked, then neither."""
-    watched = bool(watched)
-    shared = bool(shared)
-    if watched and shared:
-        return 0
-    if watched or shared:
-        return 1
-    return 2
-
-
 def _group_by_grade(df):
-    """Builds per-grade student groups, sorted by grade then by status/name.
-
-    Vectorized: status rank and the final sort are computed with pandas
-    ops across the whole frame once, rather than per student_row in a
-    Python loop, then split into groups -- this keeps the on-demand PDF
-    render fast even for large schools.
-    """
     df = df[df["student_name"] != ""].copy()
     if df.empty:
         return []
@@ -607,14 +379,11 @@ def _group_by_grade(df):
     return groups
 
 
-# --------------------------------------------------------------------------
-# on-demand: PDF render + GCS upload
-# --------------------------------------------------------------------------
-#
-# Square corners throughout (no border-radius), compact header, grade
-# tables flow continuously across page breaks (no forced break before a
-# new grade), and each row is fully tinted yellow (partial) or green
-# (both) with no separate icon chip background.
+def _format_date_range_label(start, end):
+    start_label = f"{start.day} {start.strftime('%b')}"
+    end_label = f"{end.day} {end.strftime('%b')} {end.year}"
+    return f"{start_label} - {end_label}"
+
 
 _PDF_TEMPLATE = """
 <!DOCTYPE html>
@@ -626,8 +395,6 @@ body {
   color: #1C1C1C;
   font-size: 12px;
 }
-
-/* ---- header: compact, square corners ---- */
 .banner-school {
   background: #145C3A;
   color: #FFFFFF;
@@ -654,8 +421,6 @@ body {
   margin-bottom: 14px;
   letter-spacing: 0.2px;
 }
-
-/* ---- grade blocks: flow continuously, no forced page break ---- */
 .gradehdr {
   background: #145C3A;
   padding: 7px 12px;
@@ -663,7 +428,6 @@ body {
   font-size: 12px;
   color: #FFFFFF;
 }
-
 table {
   width: 100%;
   border-collapse: collapse;
@@ -671,7 +435,7 @@ table {
   border-top: none;
   margin-bottom: 10px;
 }
-thead { display: table-header-group; } /* repeat column header on each page */
+thead { display: table-header-group; }
 tr { page-break-inside: avoid; }
 th, td {
   text-align: center;
@@ -688,21 +452,13 @@ th {
   border-bottom: 1px solid #D9D9D9;
 }
 td { border-bottom: 1px solid #D9D9D9; }
-
 td.name-col { width: 55%; text-align: left; color: #1C1C1C; font-weight: 600; }
 td.mark-col { width: 22.5%; }
-
-.icon-yes, .icon-no {
-  font-weight: 700;
-  font-size: 13px;
-}
+.icon-yes, .icon-no { font-weight: 700; font-size: 13px; }
 .icon-yes { color: #145C3A; }
 .icon-no { color: #A33A34; }
-
-/* full-row tint, no separate chip behind the tick/cross */
 .row-both td { background: #EAF3ED; }
 .row-partial td { background: #FFF6D9; }
-
 .footer {
   margin-top: 16px;
   padding-top: 7px;
@@ -748,7 +504,7 @@ td.mark-col { width: 22.5%; }
 """
 
 
-def _render_pdf(df, school_name, district_name, state_name, date_range_label):
+def _render_pdf(df, school_name, district_name, state_name, date_range_label, generated_on):
     from weasyprint import HTML
     from jinja2 import Template
 
@@ -759,7 +515,7 @@ def _render_pdf(df, school_name, district_name, state_name, date_range_label):
         state_name=state_name,
         date_range_label=date_range_label,
         groups=groups,
-        generated_on=now_datetime().strftime("%d %b %Y"),
+        generated_on=generated_on,
     )
     return HTML(string=html).write_pdf()
 
@@ -773,15 +529,18 @@ def _gcs_client(gcs_settings):
     return storage.Client(project=gcs_settings.project_id, credentials=credentials)
 
 
-def _upload_pdf_to_gcs(gcs_settings, school_id, pdf_bytes):
-    client = _gcs_client(gcs_settings)
+def _blob_path_for_school(school_id):
+    return f"teacher_reporting/{school_id}.pdf"
+
+
+def _upload_pdf_to_gcs(client, gcs_settings, school_id, pdf_bytes):
     bucket = client.bucket(gcs_settings.bucket_name)
-    blob = bucket.blob(f"teacher_reporting/{school_id}.pdf")
+    blob = bucket.blob(_blob_path_for_school(school_id))
     blob.upload_from_string(pdf_bytes, content_type="application/pdf")
     return blob
 
 
-def _signed_url(blob, minutes=60):
+def _signed_url(blob, minutes=DEFAULT_SIGNED_URL_TTL_MINUTES):
     from datetime import timedelta as _td
     try:
         return blob.generate_signed_url(expiration=_td(minutes=minutes), method="GET")
@@ -794,15 +553,299 @@ def _constant_time_eq(a, b):
     return hmac.compare_digest(str(a or ""), str(b or ""))
 
 
-# --------------------------------------------------------------------------
-# on-demand endpoint
-# --------------------------------------------------------------------------
+def _manifest_path(base):
+    return base / MANIFEST_FILENAME
+
+
+def _read_manifest(base):
+    path = _manifest_path(base)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
+def _write_manifest(base, manifest):
+    base.mkdir(parents=True, exist_ok=True)
+    tmp = base / f"{MANIFEST_FILENAME}.tmp"
+    tmp.write_text(json.dumps(manifest, separators=(",", ":")))
+    tmp.replace(_manifest_path(base))
+
+
+def _acquire_lock():
+    settings = frappe.get_single(SETTINGS_DOCTYPE)
+    status = settings.get("tsp_last_run_status")
+    started_at = settings.get("tsp_last_run_at")
+    if status == "RUNNING" and started_at:
+        elapsed = (now_datetime() - frappe.utils.get_datetime(started_at)).total_seconds() / 60
+        if elapsed < LOCK_STALE_MINUTES:
+            return False
+    settings.tsp_last_run_status = "RUNNING"
+    settings.tsp_last_run_at = now_datetime()
+    settings.save(ignore_permissions=True)
+    frappe.db.commit()
+    return True
+
+
+def _append_log_line(line):
+    settings = frappe.get_single(SETTINGS_DOCTYPE)
+    existing = settings.get("tsp_last_run_log") or ""
+    lines = (existing.splitlines() + [line])[-50:]
+    settings.tsp_last_run_log = "\n".join(lines)
+    settings.save(ignore_permissions=True)
+    frappe.db.commit()
+
+
+def _persist_run(status, stats=None, error=None):
+    settings = frappe.get_single(SETTINGS_DOCTYPE)
+    settings.tsp_last_run_at = now_datetime()
+    settings.tsp_last_run_status = status
+    if status == "OK":
+        s = stats or {}
+        log_line = (
+            f"{now_datetime()} — OK schools_uploaded={s.get('uploaded', 0)} "
+            f"schools_skipped={s.get('skipped', 0)} rows={s.get('rows', 0)} "
+            f"upload_failures={s.get('upload_failed', 0)} "
+            f"duration_s={s.get('duration_s', 0)}"
+        )
+    else:
+        log_line = f"{now_datetime()} — ERROR: {error}"
+    existing = settings.get("tsp_last_run_log") or ""
+    lines = (existing.splitlines() + [log_line])[-50:]
+    settings.tsp_last_run_log = "\n".join(lines)
+    settings.save(ignore_permissions=True)
+    frappe.db.commit()
+
+
+def _render_and_upload_one_school(school_id, chunk, school_info, gcs_client, gcs_settings,
+                                   date_range_label, generated_on):
+    school_name = school_info.get(school_id) if school_info else None
+    if not school_name:
+        return {
+            "school_id": school_id, "ok": False,
+            "reason": "school_not_found_in_lms", "rows": int(len(chunk)),
+        }
+    name, district_name, state_name = school_name
+    name = _clean_school_display_name(name)
+    if not name:
+        return {
+            "school_id": school_id, "ok": False,
+            "reason": "school_not_found_in_lms", "rows": int(len(chunk)),
+        }
+
+    try:
+        agg = _compute_school_aggregates(chunk)
+        pdf_bytes = _render_pdf(chunk, name, district_name, state_name, date_range_label, generated_on)
+        blob = _upload_pdf_to_gcs(gcs_client, gcs_settings, school_id, pdf_bytes)
+        return {
+            "school_id": school_id, "ok": True,
+            "blob_path": blob.name,
+            "school_name": name,
+            "district": district_name,
+            "state": state_name,
+            "total": agg["total"], "watched": agg["watched"], "shared": agg["shared"],
+        }
+    except Exception as exc:
+        return {
+            "school_id": school_id, "ok": False,
+            "reason": "render_or_upload_failed", "rows": int(len(chunk)),
+            "error_repr": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _iter_batches(items, batch_size):
+    for i in range(0, len(items), batch_size):
+        yield items[i:i + batch_size]
+
+
+def run_weekly_extract():
+    run_started = now_datetime()
+    settings = get_reporting_settings()
+    if not settings.enabled:
+        return {"status": "disabled"}
+
+    ok, missing_fields = _required_fields_ok(settings)
+    if not ok:
+        _persist_run("ERROR", error=f"Missing settings: {', '.join(missing_fields)}")
+        return {"status": "failure", "message": f"Missing settings: {', '.join(missing_fields)}"}
+
+    if not _acquire_lock():
+        return {"status": "skipped", "message": "already running"}
+
+    base = _resolve_parquet_base(settings.parquet_dir)
+
+    try:
+        start, end = _last_week_window(now_datetime())
+        date_range_label = _format_date_range_label(start, end)
+        df = _run_bq_query(settings, start, end)
+        df = _validate_and_normalize(df)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "teacher_reporting: query failed")
+        _persist_run("ERROR", error="BigQuery extract failed")
+        return {"status": "failure"}
+
+    try:
+        distinct_ids = df["student_id"].dropna().unique().tolist()
+        name_map = _resolve_student_names_bulk(distinct_ids)
+        df = _attach_resolved_names(df, name_map)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "teacher_reporting: name resolution failed")
+        _persist_run("ERROR", error="Student name resolution failed")
+        return {"status": "failure"}
+
+    try:
+        gcs_settings = _get_gcs_settings(settings.gcs_settings_name)
+        gcs_client = _gcs_client(gcs_settings)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "teacher_reporting: GCS setup failed")
+        _persist_run("ERROR", error="GCS Settings invalid or GCS client init failed")
+        return {"status": "failure"}
+
+    uploaded = {}
+    skipped = {}
+    schools_with_names = []
+
+    total_rows = int(len(df))
+    unresolved_total = int((df["student_name"] == "").sum())
+
+    for school_id, chunk in df.groupby("school_id", sort=False):
+        if not _looks_like_school_id(school_id):
+            logged_id = school_id if len(school_id) <= _MAX_SCHOOL_ID_LEN_IN_LOG else (
+                school_id[:_MAX_SCHOOL_ID_LEN_IN_LOG] + "...<truncated>"
+            )
+            skipped[logged_id] = "school_id_malformed"
+            continue
+        has_any_name = bool((chunk["student_name"] != "").any())
+        if not has_any_name:
+            skipped[school_id] = "no_resolved_names"
+            continue
+        schools_with_names.append((school_id, chunk))
+
+    try:
+        school_info = _resolve_school_names_bulk(sid for sid, _ in schools_with_names)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "teacher_reporting: school name resolution failed")
+        _persist_run("ERROR", error="School name resolution failed")
+        return {"status": "failure"}
+
+    generated_on = now_datetime().strftime("%d %b %Y")
+
+    _append_log_line(
+        f"{now_datetime()} — extract done: rows={total_rows} schools_total="
+        f"{len(schools_with_names) + len(skipped)} eligible={len(schools_with_names)} "
+        f"skipped_upfront={len(skipped)} unresolved_name_rows={unresolved_total} "
+        f"schools_resolved_in_lms={len(school_info)}"
+    )
+
+    max_workers = settings.max_workers
+    batch_size = settings.batch_size
+    upload_failed = 0
+    batches = list(_iter_batches(schools_with_names, batch_size))
+    total_batches = len(batches)
+
+    for batch_idx, batch in enumerate(batches, start=1):
+        batch_error_samples = []
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(
+                        _render_and_upload_one_school, school_id, chunk, school_info,
+                        gcs_client, gcs_settings, date_range_label, generated_on,
+                    ): school_id
+                    for school_id, chunk in batch
+                }
+                for fut in as_completed(futures):
+                    sid = futures[fut]
+                    try:
+                        result = fut.result()
+                    except Exception as exc:
+                        skipped[sid] = "worker_exception"
+                        upload_failed += 1
+                        batch_error_samples.append(f"{sid}: {type(exc).__name__}: {exc}")
+                        continue
+
+                    if result["ok"]:
+                        uploaded[result["school_id"]] = {
+                            "blob_path": result["blob_path"],
+                            "school_name": result["school_name"],
+                            "district": result["district"],
+                            "state": result["state"],
+                            "total": result["total"],
+                            "watched": result["watched"],
+                            "shared": result["shared"],
+                        }
+                    else:
+                        skipped[result["school_id"]] = result["reason"]
+                        if result["reason"] == "render_or_upload_failed":
+                            upload_failed += 1
+                            if result.get("error_repr") and len(batch_error_samples) < 5:
+                                batch_error_samples.append(f"{result['school_id']}: {result['error_repr']}")
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), f"teacher_reporting: batch {batch_idx} failed")
+            for school_id, _chunk in batch:
+                skipped.setdefault(school_id, "batch_failed")
+
+        if batch_error_samples:
+            frappe.log_error(
+                "\n".join(batch_error_samples),
+                f"teacher_reporting: {len(batch_error_samples)} render/upload failure sample(s) "
+                f"in batch {batch_idx}/{total_batches}",
+            )
+
+        _append_log_line(
+            f"{now_datetime()} — batch {batch_idx}/{total_batches} done: "
+            f"uploaded_so_far={len(uploaded)} skipped_so_far={len(skipped)} "
+            f"upload_failures_so_far={upload_failed}"
+        )
+
+    manifest = {
+        "week_start": start.isoformat(),
+        "week_end": end.isoformat(),
+        "date_range_label": date_range_label,
+        "generated_at": now_datetime().isoformat(),
+        "schools": uploaded,
+        "skipped": skipped,
+    }
+    try:
+        _write_manifest(base, manifest)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "teacher_reporting: manifest write failed")
+        _persist_run("ERROR", error="Manifest write failed (PDFs were still uploaded to GCS)")
+        return {
+            "status": "failure",
+            "message": "Manifest write failed; PDFs are in GCS but not yet indexed locally.",
+            "uploaded": len(uploaded), "skipped": len(skipped),
+        }
+
+    duration_s = round((now_datetime() - run_started).total_seconds(), 1)
+    stats = {
+        "uploaded": len(uploaded),
+        "skipped": len(skipped),
+        "rows": total_rows,
+        "unresolved_name_rows": unresolved_total,
+        "upload_failed": upload_failed,
+        "duration_s": duration_s,
+    }
+    _persist_run("OK", stats=stats)
+    return {"status": "success", **stats}
+
+
+def _manifest_age_days(manifest):
+    generated_at = manifest.get("generated_at")
+    if not generated_at:
+        return None
+    try:
+        generated_dt = frappe.utils.get_datetime(generated_at)
+    except Exception:
+        return None
+    return (now_datetime() - generated_dt).total_seconds() / 86400
+
 
 @frappe.whitelist(allow_guest=True)
 def teacher_report(school_id, api_key):
     try:
-        import pyarrow.parquet as pq
-
         settings = get_reporting_settings()
         if not settings.secret or not _constant_time_eq(api_key, settings.secret):
             frappe.local.response.update({"status": "failure", "message": "Invalid or missing API key"})
@@ -817,56 +860,82 @@ def teacher_report(school_id, api_key):
             frappe.local.response.update({"status": "failure", "message": "Reporting is not configured"})
             return
 
-        live_dir = Path(settings.parquet_dir) / LIVE_DIRNAME
-        manifest = _read_manifest(live_dir)
-        entry = (manifest.get("schools") or {}).get(school_id)
-        if not entry:
+        base = _resolve_parquet_base(settings.parquet_dir)
+        manifest = _read_manifest(base)
+        if not manifest:
             frappe.local.response.update({
                 "status": "failure",
-                "message": f"No data for school_id {school_id} in week {manifest.get('date_range_label', '?')}",
+                "message": "No report data available yet. The weekly extract may not have run.",
             })
             return
 
-        parquet_path = live_dir / f"{school_id}.parquet"
-        if not parquet_path.exists():
-            frappe.local.response.update({"status": "failure", "message": f"No report file for {school_id}"})
+        age_days = _manifest_age_days(manifest)
+        if age_days is not None and age_days > settings.stats_ttl_days:
+            frappe.local.response.update({
+                "status": "failure",
+                "message": (
+                    f"Report data is stale (last generated {age_days:.1f} day(s) ago, "
+                    f"older than the {settings.stats_ttl_days}-day limit). The weekly "
+                    f"extract may have failed to run recently."
+                ),
+            })
             return
 
-        df = pq.read_table(parquet_path).to_pandas()
-
-        school_name, district_name, state_name = _resolve_school_names(school_id)
-        if not school_name:
-            frappe.local.response.update({"status": "failure", "message": f"School {school_id} not found in LMS"})
+        entry = (manifest.get("schools") or {}).get(school_id)
+        if not entry:
+            reason = (manifest.get("skipped") or {}).get(school_id)
+            if reason == "no_resolved_names":
+                message = (
+                    f"No report available for school_id {school_id} in week "
+                    f"{manifest.get('date_range_label', '?')} -- no student names could be "
+                    f"resolved for this school this week."
+                )
+            elif reason == "school_not_found_in_lms":
+                message = f"School {school_id} not found in LMS."
+            elif reason:
+                message = f"No report available for school_id {school_id} ({reason})."
+            else:
+                message = (
+                    f"No data for school_id {school_id} in week "
+                    f"{manifest.get('date_range_label', '?')}"
+                )
+            frappe.local.response.update({"status": "failure", "message": message})
             return
-        school_name = _clean_school_display_name(school_name)
-
-        agg = _compute_school_aggregates(df)
-        pdf_bytes = _render_pdf(df, school_name, district_name, state_name, manifest.get("date_range_label", ""))
 
         if not settings.gcs_settings_name:
             frappe.local.response.update({"status": "failure", "message": "GCS Settings not configured"})
             return
-        gcs_settings = _get_gcs_settings(settings.gcs_settings_name)
-        blob = _upload_pdf_to_gcs(gcs_settings, school_id, pdf_bytes)
-        url = _signed_url(blob)
-        # Some downstream platforms (e.g. certain WhatsApp/Glific senders)
-        # only recognize a URL as "a PDF to send" if it ends in a
-        # #file.pdf-style anchor. We append that suffix directly onto the
-        # SAME per-request signed url generated above -- never a
-        # hardcoded example -- so "sheet" is just that one URL.
+
+        try:
+            gcs_settings = _get_gcs_settings(settings.gcs_settings_name)
+            client = _gcs_client(gcs_settings)
+            bucket = client.bucket(gcs_settings.bucket_name)
+            blob = bucket.blob(entry["blob_path"])
+            if not blob.exists(client):
+                frappe.local.response.update({
+                    "status": "failure",
+                    "message": f"Report file for {school_id} is missing in storage. Please retry after the next run.",
+                })
+                return
+            url = _signed_url(blob, minutes=settings.signed_url_ttl_minutes)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "teacher_report: signing failed")
+            frappe.local.response.update({"status": "failure", "message": "Failed to generate a download link"})
+            return
+
         sheet_url = f"{url}#file.pdf"
 
         return {
             "status": "ok",
             "school_id": school_id,
-            "school_name": school_name,
-            "state": state_name,
-            "district": district_name,
+            "school_name": entry.get("school_name", ""),
+            "state": entry.get("state", ""),
+            "district": entry.get("district", ""),
             "date_range_label": manifest.get("date_range_label", ""),
-            "total_students": agg["total"],
-            "school_watched": agg["watched"],
-            "school_not_watched": agg["not_watched"],
-            "school_shared": agg["shared"],
+            "total_students": entry.get("total", 0),
+            "school_watched": entry.get("watched", 0),
+            "school_not_watched": entry.get("total", 0) - entry.get("watched", 0),
+            "school_shared": entry.get("shared", 0),
             "sheet": sheet_url,
         }
     except Exception as exc:
@@ -875,41 +944,79 @@ def teacher_report(school_id, api_key):
         return
 
 
-# --------------------------------------------------------------------------
-# maintenance: clear the on-disk parquet cache safely
-# --------------------------------------------------------------------------
-#
-# Called from the "Clear Parquet Cache" button on BigQuery Settings
-# (see bigquery_settings.py::clear_parquet_cache). Design goals:
-#
-#   * Never delete anything in place. Every directory that is going away
-#     is first renamed (an atomic, near-instant filesystem op) to a
-#     throwaway name under the same parent, and only the renamed copy is
-#     rmtree'd. If the process dies mid-delete, the live/staging dirs
-#     under their real names are simply gone (rename already happened)
-#     or simply still there (rename never happened) -- there is no
-#     "half-deleted directory under the name teacher_reporting still
-#     expects" state for the on-demand endpoint to trip over.
-#   * Refuses to run while a weekly extract is RUNNING (same staleness
-#     window as _acquire_lock), so it can't race the swap and leave live/
-#     pointing at a directory that is being removed underneath it.
-#   * Bounded to parquet_dir itself (resolved, existence-checked) so a
-#     blank/garbage path can never resolve to something like "/" and
-#     nothing outside tsp_parquet_dir is ever touched.
-#   * Removes the stray ".previous" swap-rollback directory too, and
-#     missing.jsonl, so nothing is left behind that could confuse a
-#     later run or a later read.
+def get_teacher_reporting_stats():
+    settings = get_reporting_settings()
+    result = {
+        "enabled": bool(settings.enabled),
+        "configured": False,
+        "manifest_found": False,
+        "stale": None,
+        "age_days": None,
+        "stats_ttl_days": settings.stats_ttl_days,
+        "signed_url_ttl_minutes": settings.signed_url_ttl_minutes,
+        "week_start": None,
+        "week_end": None,
+        "date_range_label": None,
+        "generated_at": None,
+        "schools_uploaded": 0,
+        "schools_skipped": 0,
+        "skipped_reasons": {},
+        "last_run_at": settings.get("tsp_last_run_at") if hasattr(settings, "get") else None,
+        "last_run_status": None,
+        "message": None,
+    }
+
+    bq_settings_doc = frappe.get_single(SETTINGS_DOCTYPE)
+    result["last_run_at"] = bq_settings_doc.get("tsp_last_run_at")
+    result["last_run_status"] = bq_settings_doc.get("tsp_last_run_status")
+
+    if not settings.parquet_dir:
+        result["message"] = "Parquet Storage Dir is not configured."
+        return result
+
+    result["configured"] = True
+
+    try:
+        base = _resolve_parquet_base(settings.parquet_dir)
+    except ValueError as exc:
+        result["message"] = str(exc)
+        return result
+
+    manifest = _read_manifest(base)
+    if not manifest:
+        result["message"] = "No manifest found yet. The weekly extract may not have run."
+        return result
+
+    result["manifest_found"] = True
+    result["week_start"] = manifest.get("week_start")
+    result["week_end"] = manifest.get("week_end")
+    result["date_range_label"] = manifest.get("date_range_label")
+    result["generated_at"] = manifest.get("generated_at")
+
+    schools = manifest.get("schools") or {}
+    skipped = manifest.get("skipped") or {}
+    result["schools_uploaded"] = len(schools)
+    result["schools_skipped"] = len(skipped)
+
+    reason_counts = {}
+    for reason in skipped.values():
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    result["skipped_reasons"] = reason_counts
+
+    age_days = _manifest_age_days(manifest)
+    result["age_days"] = round(age_days, 2) if age_days is not None else None
+    result["stale"] = bool(age_days is not None and age_days > settings.stats_ttl_days)
+
+    if result["stale"]:
+        result["message"] = (
+            f"Report data is stale: last generated {result['age_days']} day(s) ago, "
+            f"older than the {settings.stats_ttl_days}-day limit."
+        )
+
+    return result
 
 
 def _safe_rename_and_remove(path: Path):
-    """Rename `path` out of the way, then rmtree the renamed copy.
-
-    No-op (returns False) if `path` does not exist. The rename makes the
-    removal atomic from the point of view of anything else looking at
-    `path`'s original name -- it either already moved (and this function
-    is now cleaning up a tombstone no one else references) or it hasn't
-    moved yet, never half-moved.
-    """
     if not path.exists():
         return False
     trash_name = path.with_name(f".{path.name}.trash-{uuid.uuid4().hex[:8]}")
@@ -918,14 +1025,19 @@ def _safe_rename_and_remove(path: Path):
     return True
 
 
-def _resolve_parquet_base(parquet_dir_value):
-    """Resolve + sanity-check tsp_parquet_dir before anything is touched.
+def _safe_remove_file(path: Path):
+    if not path.exists():
+        return False
+    trash_name = path.with_name(f".{path.name}.trash-{uuid.uuid4().hex[:8]}")
+    path.rename(trash_name)
+    try:
+        trash_name.unlink()
+    except Exception:
+        pass
+    return True
 
-    Returns a resolved Path, or raises ValueError with a message safe to
-    show the user. Refuses empty/whitespace values and anything that
-    resolves to the filesystem root, so a misconfigured or blank setting
-    can never cause a wipe outside the intended cache tree.
-    """
+
+def _resolve_parquet_base(parquet_dir_value):
     raw = (parquet_dir_value or "").strip()
     if not raw:
         raise ValueError("Parquet Storage Dir is not set.")
@@ -936,15 +1048,6 @@ def _resolve_parquet_base(parquet_dir_value):
 
 
 def clear_parquet_cache():
-    """Safely wipe the teacher-reporting parquet cache (live + staging +
-    the swap-rollback dir + missing.jsonl) under tsp_parquet_dir.
-
-    Returns a dict summary; never raises for "nothing to clear" or "not
-    configured" -- those are reported as part of the result, not errors.
-    Raises ValueError only for a genuinely unsafe/misconfigured path or
-    a currently-running weekly extract, both of which the caller should
-    surface to the user as-is.
-    """
     settings = frappe.get_single(SETTINGS_DOCTYPE)
 
     status = settings.get("tsp_last_run_status")
@@ -965,34 +1068,30 @@ def clear_parquet_cache():
 
     cleared = []
 
-    live = base / LIVE_DIRNAME
-    if _safe_rename_and_remove(live):
-        cleared.append(str(live))
+    if _safe_remove_file(_manifest_path(base)):
+        cleared.append(str(_manifest_path(base)))
 
-    staging = base / STAGING_DIRNAME
-    if _safe_rename_and_remove(staging):
-        cleared.append(str(staging))
+    legacy_live = base / _LEGACY_LIVE_DIRNAME
+    if _safe_rename_and_remove(legacy_live):
+        cleared.append(str(legacy_live))
 
-    previous = base / "live" / "teacher_reporting.previous"
-    if _safe_rename_and_remove(previous):
-        cleared.append(str(previous))
+    legacy_staging = base / _LEGACY_STAGING_DIRNAME
+    if _safe_rename_and_remove(legacy_staging):
+        cleared.append(str(legacy_staging))
 
-    missing_path = base / "missing.jsonl"
-    if missing_path.exists():
-        try:
-            missing_path.unlink()
-            cleared.append(str(missing_path))
-        except Exception:
-            frappe.log_error(frappe.get_traceback(), "teacher_reporting: missing.jsonl cleanup failed")
+    legacy_previous = base / _LEGACY_LIVE_PARENT / _LEGACY_PREVIOUS_DIRNAME
+    if _safe_rename_and_remove(legacy_previous):
+        cleared.append(str(legacy_previous))
+
+    legacy_missing = base / _LEGACY_MISSING_FILENAME
+    if _safe_remove_file(legacy_missing):
+        cleared.append(str(legacy_missing))
 
     for tmp_leftover in base.glob("**/*.tmp"):
         try:
             tmp_leftover.unlink()
             cleared.append(str(tmp_leftover))
         except Exception:
-            # Best-effort only -- a stray .tmp file left behind by an
-            # interrupted write is harmless clutter, not a correctness
-            # issue, so a failure here should not fail the whole clear.
             pass
 
     log_line = f"{now_datetime()} — CACHE CLEARED by {frappe.session.user} ({len(cleared)} paths)"

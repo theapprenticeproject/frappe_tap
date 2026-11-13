@@ -13,33 +13,48 @@ class BigQuerySettings(Document):
 def clear_parquet_cache():
 	"""Called by the "Clear Parquet Cache" button on this doctype.
 
-	Restricted to System Manager (same role required to write this
-	single doctype) and delegates all of the actual filesystem work to
+	Restricted to System Manager and delegates all filesystem work to
 	teacher_reporting.clear_parquet_cache, which does the safe
 	rename-then-remove dance so a crash mid-clear can't leave a
-	half-deleted cache directory behind. Any failure is logged and
-	re-raised as a frappe.ValidationError so the user sees a clean
-	message in the UI instead of a traceback.
+	half-deleted local state file behind, and refuses to run while a
+	weekly extract genuinely holds the run lock.
+
+	This only clears local state (pdf_manifest.json, missing_schools.json,
+	the local event log, and any legacy parquet/staging/live directories
+	from before PDFs were generated at extract time). It never touches
+	the PDFs already uploaded to GCS.
 	"""
 	frappe.only_for("System Manager")
 
 	from tap_lms.bigquery.teacher.teacher_reporting import (
-		clear_parquet_cache as _clear_parquet_cache,
+		clear_parquet_cache as clear_local_state,
 	)
 
 	try:
-		result = _clear_parquet_cache()
+		result = clear_local_state()
 	except ValueError as exc:
 		frappe.throw(str(exc))
 	except Exception:
-		frappe.log_error(frappe.get_traceback(), "BigQuery Settings: clear_parquet_cache failed")
-		frappe.throw("Failed to clear the parquet cache. Check the Error Log for details.")
+		frappe.log_error(frappe.get_traceback(), "BigQuery Settings: clear_local_state failed")
+		frappe.throw("Failed to clear local state. Check the Error Log for details.")
 
 	if result.get("status") == "noop":
 		frappe.msgprint(result.get("message") or "Nothing to clear.")
 	else:
 		frappe.msgprint(
-			f"Cleared {result.get('count', 0)} cache path(s)."
+			f"Cleared {result.get('count', 0)} local path(s). GCS PDFs were not touched."
 		)
 
 	return result
+
+
+@frappe.whitelist()
+def teacher_reporting_stats():
+	"""Called by the "View Stats" button on this doctype. Pure local
+	read -- no BigQuery or GCS calls -- safe to click repeatedly.
+	"""
+	frappe.only_for("System Manager")
+
+	from tap_lms.bigquery.teacher.teacher_reporting import get_teacher_reporting_stats
+
+	return get_teacher_reporting_stats()

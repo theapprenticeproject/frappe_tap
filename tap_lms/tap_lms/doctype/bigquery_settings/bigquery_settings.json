@@ -38,6 +38,12 @@
   "tsp_parquet_dir",
   "tsp_gcs_settings",
   "tsp_max_query_gb",
+  "tsp_column_break_4",
+  "tsp_max_workers",
+  "tsp_batch_size",
+  "tsp_column_break_5",
+  "tsp_signed_url_ttl_minutes",
+  "tsp_stats_ttl_days",
   "tsp_section_break_diag",
   "tsp_last_run_at",
   "tsp_last_run_status",
@@ -147,7 +153,7 @@
   },
   {
    "collapsible": 1,
-   "description": "Weekly BigQuery -> parquet extract + on-demand PDF report endpoint for Glific. Shares ONLY the Project ID / Credentials JSON above. Does not read or require the 'Enabled' checkbox, lookback_days, batch_limit, flow_label_filter or any other image-sync field above; has its own tables, filters, secret and schedule.",
+   "description": "Weekly BigQuery -> PDF-per-school extract (rendered and uploaded to GCS at run time) + on-demand signed-URL endpoint for Glific. Shares ONLY the Project ID / Credentials JSON above. Does not read or require the 'Enabled' checkbox, lookback_days, batch_limit, flow_label_filter or any other image-sync field above; has its own tables, filters, secret and schedule.",
    "fieldname": "tsp_section_break",
    "fieldtype": "Section Break",
    "label": "Teacher Reporting"
@@ -228,7 +234,7 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "Absolute filesystem path (same mount throughout) under which 'live/', '.staging/' and missing.jsonl are kept. A path under the site's private/files tree works by default, e.g. /home/frappe/frappe-bench/sites/<site>/private/files/teacher_reporting.",
+   "description": "Absolute filesystem path under which the small local report index (pdf_manifest.json, mapping school_id -> GCS path) is kept. No parquet or per-school files are stored here any more — PDFs live in GCS. A path under the site's private/files tree works by default, e.g. /home/frappe/frappe-bench/sites/<site>/private/files/teacher_reporting.",
    "fieldname": "tsp_parquet_dir",
    "fieldtype": "Data",
    "label": "Parquet Storage Dir",
@@ -248,6 +254,42 @@
    "fieldname": "tsp_max_query_gb",
    "fieldtype": "Int",
    "label": "Max Query Size (GB)"
+  },
+  {
+   "fieldname": "tsp_column_break_4",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "8",
+   "description": "How many schools' PDFs to render and upload to GCS at the same time. Keep modest (4-16) — this runs inside the Frappe worker process, and each one does a PDF render plus a GCS upload. Blank or 0 falls back to 8; values above 32 are capped at 32 for safety.",
+   "fieldname": "tsp_max_workers",
+   "fieldtype": "Int",
+   "label": "Max Parallel Workers"
+  },
+  {
+   "default": "200",
+   "description": "How many schools are processed per batch before the run log is updated with progress. Keeps memory flat regardless of total school count (e.g. 27,000 schools) since only one batch's data is ever held in memory at a time. Blank or 0 falls back to 200; values above 2000 are capped at 2000.",
+   "fieldname": "tsp_batch_size",
+   "fieldtype": "Int",
+   "label": "Batch Size"
+  },
+  {
+   "fieldname": "tsp_column_break_5",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "10080",
+   "description": "How long each signed GCS URL for a school's PDF stays valid, in minutes. Default is 7 days (10080), matching the weekly report cycle so a link stays usable until replaced by the next run. Blank or 0 falls back to 10080; values above 10080 are capped at 10080 (the GCS V4 signed URL limit for service-account signing).",
+   "fieldname": "tsp_signed_url_ttl_minutes",
+   "fieldtype": "Int",
+   "label": "Signed URL TTL (minutes)"
+  },
+  {
+   "default": "7",
+   "description": "How old the local manifest (last successful weekly run) is allowed to be, in days, before the on-demand endpoint treats its stats as stale and refuses to serve them. Blank or 0 falls back to 7.",
+   "fieldname": "tsp_stats_ttl_days",
+   "fieldtype": "Int",
+   "label": "Stats TTL (days)"
   },
   {
    "collapsible": 1,
@@ -270,7 +312,7 @@
    "read_only": 1
   },
   {
-   "description": "Rolling tail of the last 50 runs (OK/ERROR + counts). For troubleshooting only.",
+   "description": "Rolling tail of the last 50 log lines, including live per-batch progress during a run (uploaded/skipped/failed counts) and the final summary. For troubleshooting and watching overnight runs.",
    "fieldname": "tsp_last_run_log",
    "fieldtype": "Long Text",
    "label": "Run Log",
@@ -280,7 +322,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-11-12 00:00:00.000000",
+ "modified": "2026-11-13 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "BigQuery Settings",
