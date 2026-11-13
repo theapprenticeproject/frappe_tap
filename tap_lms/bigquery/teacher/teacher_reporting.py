@@ -849,6 +849,13 @@ def teacher_report(school_id, api_key):
         gcs_settings = _get_gcs_settings(settings.gcs_settings_name)
         blob = _upload_pdf_to_gcs(gcs_settings, school_id, pdf_bytes)
         url = _signed_url(blob)
+        # Some downstream platforms (e.g. certain WhatsApp/Glific senders)
+        # only recognize a URL as "a PDF to send" if it carries a markdown
+        # link whose visible text ends in a #file.pdf-style anchor. We
+        # append that suffix to the SAME per-request signed url generated
+        # above -- never a hardcoded example -- so the link stays valid
+        # and still points at this exact signed URL.
+        sheet_url = f"{url} [#file.pdf]({url}#file.pdf)"
 
         return {
             "status": "ok",
@@ -860,7 +867,7 @@ def teacher_report(school_id, api_key):
             "school_watched": agg["watched"],
             "school_not_watched": agg["not_watched"],
             "school_shared": agg["shared"],
-            "sheet": url,
+            "sheet": sheet_url,
         }
     except Exception as exc:
         frappe.log_error(frappe.get_traceback(), "teacher_report failed")
