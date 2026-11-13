@@ -850,12 +850,12 @@ def teacher_report(school_id, api_key):
         blob = _upload_pdf_to_gcs(gcs_settings, school_id, pdf_bytes)
         url = _signed_url(blob)
         # Some downstream platforms (e.g. certain WhatsApp/Glific senders)
-        # only recognize a URL as "a PDF to send" if it carries a markdown
-        # link whose visible text ends in a #file.pdf-style anchor. We
-        # append that suffix to the SAME per-request signed url generated
-        # above -- never a hardcoded example -- so the link stays valid
-        # and still points at this exact signed URL.
-        sheet_url = f"{url} [#file.pdf]({url}#file.pdf)"
+        # only recognize a URL as "a PDF to send" if it's wrapped as a
+        # markdown link whose visible text ends in a #file.pdf-style
+        # anchor. We wrap the SAME per-request signed url generated above
+        # -- never a hardcoded example -- so "sheet" is just that one
+        # markdown link, not the raw url plus a second copy of it.
+        sheet_url = f"[#file.pdf]({url}#file.pdf)"
 
         return {
             "status": "ok",
@@ -864,6 +864,7 @@ def teacher_report(school_id, api_key):
             "state": state_name,
             "district": district_name,
             "date_range_label": manifest.get("date_range_label", ""),
+            "total_students": agg["total"],
             "school_watched": agg["watched"],
             "school_not_watched": agg["not_watched"],
             "school_shared": agg["shared"],
