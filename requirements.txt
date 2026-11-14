@@ -4,3 +4,8 @@ elevenlabs
 fuzzywuzzy
 google-cloud-storage
 google-cloud-bigquery
+pandas
+pyarrow
+weasyprint
+jinja2
+db-dtypes
