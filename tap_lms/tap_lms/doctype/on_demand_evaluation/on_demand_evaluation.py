@@ -10,6 +10,9 @@ from frappe.utils import now_datetime
 from google.auth.transport.requests import AuthorizedSession
 from openpyxl import Workbook
 from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
+from openpyxl.workbook.properties import CalcProperties
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from tap_lms.imgana.submission import enqueue_submissions_batch
 from tap_lms.onboarding.backend_upload_utils import (
@@ -165,14 +168,25 @@ def _build_output_file_name(program, unit_activity_no, timestamp):
 
 
 def _build_xlsx(job_name):
-	submissions = frappe.get_all(
-		"Submission",
-		filters={"rubric_eval_job": job_name},
-		fields=[
-			"name", "student_id", "submission_type", "submission_url", "assign_id", "created_at",
-			"plagiarism_status", "overall_feedback", "overall_feedback_translated",
-		],
-		order_by="name",
+	batch = frappe.db.get_value("On Demand Evaluation", job_name, "batch")
+	submissions = frappe.db.sql(
+		"""
+		SELECT s.name, s.student_id, s.submission_type, s.submission_url, s.assign_id, s.created_at,
+			s.plagiarism_status, s.overall_feedback, s.overall_feedback_translated,
+			a.vertical, a.level, school.state
+		FROM `tabSubmission` s
+		LEFT JOIN `tabAssignment` a ON a.name = s.assign_id
+		LEFT JOIN `tabStudent Enrollment` enrollment ON enrollment.name = (
+			SELECT e.name FROM `tabStudent Enrollment` e
+			WHERE e.parenttype = 'Student' AND e.parent = s.student_id AND e.batch = %(batch)s
+			ORDER BY e.idx LIMIT 1
+		)
+		LEFT JOIN `tabSchool` school ON school.name = enrollment.school
+		WHERE s.rubric_eval_job = %(job_name)s
+		ORDER BY s.name
+		""",
+		{"batch": batch, "job_name": job_name},
+		as_dict=True,
 	)
 	rubrics = {}
 	for row in frappe.get_all(
@@ -194,10 +208,13 @@ def _build_xlsx(job_name):
 	]
 	for i in range(1, max_skills + 1):
 		header += [f"Skill {i}", f"Grade Value {i}", f"Observation {i}"]
+	header += ["Vertical", "Level", "State"]
 
 	workbook = Workbook()
-	worksheet = workbook.active
-	worksheet.title = "Evaluation Results"
+	workbook.calculation = CalcProperties(calcMode="auto", fullCalcOnLoad=True, forceFullCalc=True)
+	summary = workbook.active
+	summary.title = "Summary"
+	worksheet = workbook.create_sheet("Evaluation Results")
 	worksheet.freeze_panes = "A2"
 	worksheet.append(header)
 	for cell in worksheet[1]:
@@ -215,12 +232,102 @@ def _build_xlsx(job_name):
 		]
 		for r in rows:
 			line += [r.skill, r.grade_value, r.observation]
+		line += [None] * (3 * (max_skills - len(rows)))
+		line += [s.vertical, s.level, s.state]
 		worksheet.append([
 			ILLEGAL_XLSX_CHARACTERS.sub("", value) if isinstance(value, str) else value
 			for value in line
 		])
 
 	worksheet.auto_filter.ref = worksheet.dimensions
+	bq = workbook.create_sheet("BQ stats")
+	bq.append(["Student_ID", "Grade", "Level", "Vertical", "School_ID", "State"])
+	bq.freeze_panes = "A2"
+	for cell in bq[1]:
+		cell.font = Font(bold=True)
+		bq.column_dimensions[cell.column_letter].width = 18
+
+	# Keep ranges tied to the generated headers, including every exported skill slot.
+	columns = {cell.value: cell.column_letter for cell in worksheet[1]}
+	bq_columns = {cell.value: cell.column_letter for cell in bq[1]}
+	last_row = max(2, worksheet.max_row)
+	result_ranges = {name: f"'Evaluation Results'!${col}$2:${col}${last_row}" for name, col in columns.items()}
+	student_column = f"'BQ stats'!${bq_columns['Student_ID']}:${bq_columns['Student_ID']}"
+	# SUMPRODUCT also evaluates the array expression after importing into Google Sheets.
+	summary["I2"] = f'=MAX(2,SUMPRODUCT(MAX(({student_column}<>"")*ROW({student_column}))))'
+	bq_ranges = {
+		name: f"'BQ stats'!${col}$2:INDEX('BQ stats'!${col}:${col},$I$2)"
+		for name, col in bq_columns.items()
+	}
+	filters = []
+	bq_filters = []
+	for row, dimension in enumerate(("Vertical", "Level", "State"), 2):
+		summary[f"E{row}"] = dimension
+		summary[f"F{row}"] = "All"
+		selector = f"$F${row}"
+		filters.append(f'((({selector}="All")+({result_ranges[dimension]}={selector}))>0)')
+		bq_filters.append(f'((({selector}="All")+({bq_ranges[dimension]}={selector}))>0)')
+		option_column = get_column_letter(row + 8)
+		# Replacing blank options with All lets UNIQUE remove them without FILTER's
+		# Excel-only serialization prefix, which Google Sheets does not import.
+		options = ",".join((
+			f'INDEX(IF({result_ranges[dimension]}="","All",{result_ranges[dimension]}),0)',
+			f'INDEX(IF(({bq_ranges["Student_ID"]}="")+({bq_ranges[dimension]}=""),'
+			f'"All",{bq_ranges[dimension]}),0)',
+		))
+		summary[f"{option_column}2"] = f'=_xlfn.UNIQUE(_xlfn.VSTACK("All",{options}))'
+		validation = DataValidation(type="list", formula1=f"${option_column}:${option_column}")
+		summary.add_data_validation(validation)
+		validation.add(summary[f"F{row}"])
+	summary.column_dimensions.group("I", "L", hidden=True)
+	result_mask = "*".join([f'({result_ranges["Submission ID"]}<>"")', *filters])
+	bq_mask = "*".join([f'({bq_ranges["Student_ID"]}<>"")', *bq_filters])
+
+	summary["A2"] = "Total Students Registered (A)"
+	summary["B2"] = frappe.db.sql(
+		"""SELECT COUNT(DISTINCT parent) FROM `tabStudent Enrollment`
+		WHERE parenttype = 'Student' AND batch = %s""", (batch,),
+	)[0][0]
+	for row, label, formula in (
+		(3, "Out of (A) who watched the video", f"=SUMPRODUCT({bq_mask})"),
+		(5, "Students who watched the video (B)", "=B3"),
+		(6, "Out of (B) who submitted (C)", f"=SUMPRODUCT({result_mask})"),
+		(7, "Out of (B) Valid Submission", f'=SUMPRODUCT({result_mask}*({result_ranges["Submission Validity"]}="valid"))'),
+		(8, "Out of (C) Valid Submission", "=B7"),
+	):
+		summary[f"A{row}"] = label
+		summary[f"B{row}"] = formula
+	for row, denominator in ((3, 2), (6, 5), (7, 5), (8, 6)):
+		summary[f"C{row}"] = f'=IF($B${denominator}=0,"",B{row}/$B${denominator})'
+		summary[f"C{row}"].number_format = "0.00%"
+
+	skill_pairs = [
+		(name, f"Grade Value {name.removeprefix('Skill ')}")
+		for name in columns if re.fullmatch(r"Skill \d+", name)
+	]
+	skills = sorted({
+		cell.value for skill, _ in skill_pairs for cell in worksheet[columns[skill]][1:]
+		if cell.value and cell.value.strip()
+	})
+	for row, skill in zip(range(11, 11 + 5 * len(skills), 5), skills):
+		for col, label in enumerate((skill, "Invalid", "Novice", "Beginner", "Emerging", "Proficient", "Expert"), 1):
+			summary.cell(row, col, label).font = Font(bold=True)
+		summary.cell(row + 1, 1, "Absolutes")
+		summary.cell(row + 2, 1, "Percentage")
+		for col, grade in enumerate((-1, 1, 2, 3, 4, 5), 2):
+			matches = "+".join(
+				f'(({result_ranges[skill_header]}=$A{row})*({result_ranges[grade_header]}={grade}))'
+				for skill_header, grade_header in skill_pairs
+			)
+			summary.cell(row + 1, col, f"=SUMPRODUCT({result_mask}*(({matches})>0))").number_format = "0"
+			denominator = 6 if grade == -1 else 7
+			letter = get_column_letter(col)
+			summary.cell(row + 2, col, f'=IF($B${denominator}=0,"",{letter}{row + 1}/$B${denominator})').number_format = "0.00%"
+	summary.column_dimensions["A"].width = 48
+	for col in "BCDEFG":
+		summary.column_dimensions[col].width = 18
+	for row in (2, 3, 5, 6, 7, 8):
+		summary[f"B{row}"].number_format = "0"
 	buffer = BytesIO()
 	workbook.save(buffer)
 	return buffer.getvalue()
