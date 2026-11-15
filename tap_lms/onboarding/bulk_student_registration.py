@@ -9,19 +9,20 @@ from urllib.parse import urlparse
 
 import frappe
 import requests
-from google.auth.transport.requests import AuthorizedSession
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 from psycopg2.extras import execute_values
 
 from tap_lms.onboarding.backend_upload_utils import (
-    GCP_CREDENTIALS_PROJECT_ID,
     GLIFIC_EXISTING_STUDENT_CSV_HEADERS,
     GLIFIC_NEW_STUDENT_CSV_HEADERS,
-    create_google_drive_folder as _create_google_drive_folder,
-    get_google_service_account_credentials as _get_google_service_account_credentials,
-    get_google_service_account_email as _get_google_service_account_email,
     render_glific_contact_csv as _render_glific_contact_csv,
+)
+from tap_lms.utils.google_drive_helper import (
+    create_google_drive_folder as _create_google_drive_folder,
+    download_private_drive_file as _download_private_drive_file,
+    download_private_workbook as _download_private_workbook,
+    extract_google_drive_file_id as _extract_google_drive_file_id,
     upload_bytes_to_google_drive as _upload_bytes_to_google_drive,
 )
 from tap_lms.tap_lms.doctype.student.student import BLOCKED_BATCH_ID
@@ -38,6 +39,7 @@ from tap_lms.tap_lms.doctype.student.student import BLOCKED_BATCH_ID
 #     sample_test=100,
 # )
 
+STUDENT_BULK_IMPORT_DRIVE_FOLDER_ID = "1__wcgwdQT0heEpf-g0vhfL8lRTb_jkG8"
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/18VmTVTCwK2QNct3Y-aICdH7I6F2Zq8ltSWIIqIlRtgg/edit?gid=0#gid=0"
 TAB_NAMES = ["Existing Students", "New Students"]
 SAMPLE_TEST = 0
@@ -165,7 +167,8 @@ def run_import(
         precheck = _run_prechecks()
         _print_precheck(precheck, log_fn=log_fn)
         drive_folder = _create_google_drive_folder(
-            _build_job_drive_folder_name(job_name, started_at)
+            _build_job_drive_folder_name(job_name, started_at),
+            STUDENT_BULK_IMPORT_DRIVE_FOLDER_ID,
         )
         _emit(
             log_fn,
@@ -319,7 +322,7 @@ def run_import(
 
 
 def _download_workbook(spreadsheet_url: str):
-    drive_file_id = _extract_drive_file_id(spreadsheet_url)
+    drive_file_id = _extract_google_drive_file_id(spreadsheet_url)
     if drive_file_id and not _extract_sheet_id(spreadsheet_url):
         response = _download_private_drive_file(drive_file_id)
         return load_workbook(BytesIO(response.content), read_only=True, data_only=True)
@@ -351,87 +354,6 @@ def _build_download_url(spreadsheet_url: str) -> str:
 def _extract_sheet_id(spreadsheet_url: str) -> str | None:
     match = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", spreadsheet_url)
     return match.group(1) if match else None
-
-
-def _extract_drive_file_id(file_url: str) -> str | None:
-    for pattern in (
-        r"/spreadsheets/d/([a-zA-Z0-9-_]+)",
-        r"/file/d/([a-zA-Z0-9-_]+)",
-        r"[?&]id=([a-zA-Z0-9-_]+)",
-    ):
-        match = re.search(pattern, file_url)
-        if match:
-            return match.group(1)
-    return None
-
-
-def _download_private_workbook(file_id: str) -> requests.Response:
-    credentials = _get_google_service_account_credentials()
-    session = AuthorizedSession(credentials)
-    response = session.get(
-        "https://www.googleapis.com/drive/v3/files/{file_id}/export".format(file_id=file_id),
-        params={
-            "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        },
-        timeout=120,
-    )
-    if _is_file_not_exportable_response(response):
-        media_response = session.get(
-            "https://www.googleapis.com/drive/v3/files/{file_id}".format(file_id=file_id),
-            params={"alt": "media"},
-            timeout=120,
-        )
-        if media_response.status_code == 403:
-            service_account_email = _get_google_service_account_email()
-            raise frappe.ValidationError(
-                "Private Google Drive file access denied (403). "
-                f"Share the file with the service account '{service_account_email}' "
-                f"from GCS Settings project_id '{GCP_CREDENTIALS_PROJECT_ID}', "
-                "or verify that the Google Drive API is enabled for that project."
-            )
-        media_response.raise_for_status()
-        return media_response
-    if response.status_code == 403:
-        service_account_email = _get_google_service_account_email()
-        raise frappe.ValidationError(
-            "Private Google Sheet access denied (403). "
-            f"Share the sheet with the service account '{service_account_email}' "
-            f"from GCS Settings project_id '{GCP_CREDENTIALS_PROJECT_ID}', "
-            "or verify that the Google Drive API is enabled for that project."
-        )
-    response.raise_for_status()
-    return response
-
-
-def _download_private_drive_file(file_id: str) -> requests.Response:
-    credentials = _get_google_service_account_credentials()
-    session = AuthorizedSession(credentials)
-    response = session.get(
-        "https://www.googleapis.com/drive/v3/files/{file_id}".format(file_id=file_id),
-        params={"alt": "media", "supportsAllDrives": "true"},
-        timeout=120,
-    )
-    if response.status_code == 403:
-        service_account_email = _get_google_service_account_email()
-        raise frappe.ValidationError(
-            "Private Google Drive file access denied (403). "
-            f"Share the file with the service account '{service_account_email}' "
-            f"from GCS Settings project_id '{GCP_CREDENTIALS_PROJECT_ID}', "
-            "or verify that the Google Drive API is enabled for that project."
-        )
-    response.raise_for_status()
-    return response
-
-
-def _is_file_not_exportable_response(response: requests.Response) -> bool:
-    if response.status_code != 403:
-        return False
-    try:
-        payload = response.json()
-    except Exception:
-        return False
-    errors = payload.get("error", {}).get("errors", [])
-    return any(error.get("reason") == "fileNotExportable" for error in errors if isinstance(error, dict))
 
 
 def _create_and_upload_failed_rows_workbook(

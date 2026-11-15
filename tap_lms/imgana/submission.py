@@ -4,6 +4,8 @@ from urllib.parse import urlparse
 
 import frappe
 
+GCS_SETTINGS_NAME = "central-phalanx-297915-Authenticated"
+
 
 # GLIFIC_FEEDBACK_FLOW_ID = "" ## Remove flow id if Feedback flow is not to be triggered by backend. 
 GLIFIC_FEEDBACK_FLOW_ID = "41954"
@@ -310,9 +312,14 @@ def submit_artwork_audio(submission_id, audio):
 def process_artwork_audio_async(submission_id, audio):
     """Upload an audio explanation URL to GCS and save its resulting URL."""
     try:
-        from tap_lms.imgana.gcs_client import upload_to_gcs
+        from tap_lms.utils.gcs_client import upload_to_gcs
 
-        uploaded_url = upload_to_gcs(audio, submission_id, media_type="audio")
+        uploaded_url = upload_to_gcs(
+            audio,
+            submission_id,
+            GCS_SETTINGS_NAME,
+            media_type="audio",
+        )
         frappe.db.set_value(
             "Submission",
             submission_id,
@@ -396,11 +403,12 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
                     f"source={source}, media_type={media_type}"
                 )
             else:
-                from tap_lms.imgana.gcs_client import upload_to_gcs
+                from tap_lms.utils.gcs_client import upload_to_gcs
 
                 uploaded_url = upload_to_gcs(
                     raw_submission,
                     submission_doc.name,
+                    GCS_SETTINGS_NAME,
                     media_type=media_type,
                 )
                 frappe.logger("submission").info(

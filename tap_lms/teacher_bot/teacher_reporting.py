@@ -1,5 +1,4 @@
 import json
-import hmac
 import re
 import shutil
 import uuid
@@ -8,9 +7,13 @@ from datetime import timedelta
 from pathlib import Path
 
 import frappe
-from frappe.utils import cint, now_datetime
+from frappe.utils import now_datetime
+from tap_lms.onboarding.utils import authenticate_api_key
+from tap_lms.utils.bigquery_helper import get_bigquery_client, run_query
+from tap_lms.utils.gcs_client import get_gcs_bucket
+from tap_lms.utils.scheduled_jobs import get_job_config
 
-SETTINGS_DOCTYPE = "BigQuery Settings"
+SCHEDULED_JOB_NAME = "teacher_reporting.run_weekly_extract"
 
 LOCK_STALE_MINUTES = 10
 STUDENT_CHUNK_SIZE = 5000
@@ -25,20 +28,11 @@ _LEGACY_MISSING_FILENAME = "missing.jsonl"
 
 MANIFEST_FILENAME = "pdf_manifest.json"
 
-DEFAULT_MAX_WORKERS = 8
-DEFAULT_BATCH_SIZE = 200
 HARD_MAX_WORKERS = 32
 HARD_MAX_BATCH_SIZE = 2000
-
-DEFAULT_SIGNED_URL_TTL_MINUTES = 10080
 HARD_MAX_SIGNED_URL_TTL_MINUTES = 10080
-DEFAULT_STATS_TTL_DAYS = 7
 
-REQUIRED_SETTING_FIELDS = (
-    "project_id", "credentials_json", "dataset_id", "contacts_table",
-    "messages_table", "main_flow_name", "group_label_pattern",
-    "parquet_dir", "gcs_settings_name", "secret",
-)
+REQUIRED_SETTING_FIELDS = ("dataset_id", "contacts_table", "messages_table", "gcs_settings_name")
 
 _SCHOOL_ID_PATTERNS = (
     re.compile(r"^SC\d{8}$"),
@@ -70,69 +64,21 @@ def _looks_like_student_id(value):
 
 
 def get_reporting_settings():
-    settings = frappe.get_single(SETTINGS_DOCTYPE)
+    job = get_job_config(SCHEDULED_JOB_NAME)
+    parameters = job.parameters
     return frappe._dict({
-        "enabled": cint(settings.get("tsp_enabled")),
-        "project_id": (settings.get("project_id") or "").strip(),
-        "credentials_json": settings.get_password("credentials_json", raise_exception=False),
-        "dataset_id": (settings.get("tsp_dataset_id") or "").strip(),
-        "contacts_table": (settings.get("tsp_contacts_table") or "").strip(),
-        "messages_table": (settings.get("tsp_messages_table") or "").strip(),
-        "group_label_pattern": (settings.get("tsp_group_label_pattern") or "").strip(),
-        "main_flow_name": (settings.get("tsp_main_flow_name") or "").strip(),
-        "watched_flow_label": (settings.get("tsp_watched_flow_label") or "%Activity_Access%").strip(),
-        "shared_flow_label": (settings.get("tsp_shared_flow_label") or "%Activity_Submission%").strip(),
-        "parquet_dir": (settings.get("tsp_parquet_dir") or "").strip(),
-        "gcs_settings_name": settings.get("tsp_gcs_settings"),
-        "secret": settings.get_password("tsp_secret", raise_exception=False),
-        "max_query_gb": cint(settings.get("tsp_max_query_gb")) or 10,
-        "max_workers": _bounded(cint(settings.get("tsp_max_workers")), DEFAULT_MAX_WORKERS, HARD_MAX_WORKERS),
-        "batch_size": _bounded(cint(settings.get("tsp_batch_size")), DEFAULT_BATCH_SIZE, HARD_MAX_BATCH_SIZE),
-        "signed_url_ttl_minutes": _bounded(
-            cint(settings.get("tsp_signed_url_ttl_minutes")),
-            DEFAULT_SIGNED_URL_TTL_MINUTES,
-            HARD_MAX_SIGNED_URL_TTL_MINUTES,
-        ),
-        "stats_ttl_days": cint(settings.get("tsp_stats_ttl_days")) or DEFAULT_STATS_TTL_DAYS,
+        "enabled": job.enabled,
+        **parameters,
+        "parquet_dir": frappe.get_site_path("private", "files", "teacher_reporting"),
+        "max_workers": min(parameters.max_workers, HARD_MAX_WORKERS),
+        "batch_size": min(parameters.batch_size, HARD_MAX_BATCH_SIZE),
+        "signed_url_ttl_minutes": min(parameters.signed_url_ttl_minutes, HARD_MAX_SIGNED_URL_TTL_MINUTES),
     })
-
-
-def _bounded(value, default, hard_max):
-    value = cint(value)
-    if value <= 0:
-        value = default
-    return min(value, hard_max)
 
 
 def _required_fields_ok(settings):
     missing = [f for f in REQUIRED_SETTING_FIELDS if not settings.get(f)]
     return (not missing), missing
-
-
-def _get_gcs_settings(gcs_settings_name):
-    doc = frappe.get_doc("GCS Settings", gcs_settings_name)
-    if not cint(doc.enabled):
-        raise ValueError(f"GCS Settings {gcs_settings_name} is not enabled")
-    return frappe._dict({
-        "bucket_name": (doc.bucket_name or "").strip(),
-        "project_id": (doc.project_id or "").strip(),
-        "credentials_json": doc.get_password("credentials_json", raise_exception=False),
-        "bucket_type": doc.bucket_type,
-    })
-
-
-def get_bq_client(settings):
-    from google.cloud import bigquery
-    from google.oauth2 import service_account
-
-    if not settings.credentials_json:
-        raise ValueError("BigQuery Settings: Credentials JSON is not set")
-    if not settings.project_id:
-        raise ValueError("BigQuery Settings: Project ID is not set")
-
-    info = json.loads(settings.credentials_json)
-    credentials = service_account.Credentials.from_service_account_info(info)
-    return bigquery.Client(project=settings.project_id, credentials=credentials)
 
 
 QUERY_TEMPLATE = """
@@ -172,10 +118,6 @@ ORDER BY students.school_id, students.student_id
 """
 
 
-def _fully_qualified(settings, table_name):
-    return f"{settings.project_id}.{settings.dataset_id}.{table_name}"
-
-
 def _last_week_window(ref_dt):
     end = ref_dt.date() - timedelta(days=1)
     start = end - timedelta(days=6)
@@ -183,27 +125,27 @@ def _last_week_window(ref_dt):
 
 
 def _run_bq_query(settings, start, end, client=None):
-    from google.cloud import bigquery
     import pandas as pd
 
-    client = client or get_bq_client(settings)
+    client = client or get_bigquery_client()
     query = QUERY_TEMPLATE.format(
-        contacts_table_fq=_fully_qualified(settings, settings.contacts_table),
-        messages_table_fq=_fully_qualified(settings, settings.messages_table),
+        contacts_table_fq=f"{client.project}.{settings.dataset_id}.{settings.contacts_table}",
+        messages_table_fq=f"{client.project}.{settings.dataset_id}.{settings.messages_table}",
     )
     params = [
-        bigquery.ScalarQueryParameter("group_label_pattern", "STRING", settings.group_label_pattern),
-        bigquery.ScalarQueryParameter("main_flow_name", "STRING", settings.main_flow_name),
-        bigquery.ScalarQueryParameter("watched_flow_label", "STRING", settings.watched_flow_label),
-        bigquery.ScalarQueryParameter("shared_flow_label", "STRING", settings.shared_flow_label),
-        bigquery.ScalarQueryParameter("window_start", "DATE", start),
-        bigquery.ScalarQueryParameter("window_end", "DATE", end),
+        ("group_label_pattern", "STRING", settings.group_label_pattern),
+        ("main_flow_name", "STRING", settings.main_flow_name),
+        ("watched_flow_label", "STRING", settings.watched_flow_label),
+        ("shared_flow_label", "STRING", settings.shared_flow_label),
+        ("window_start", "DATE", start),
+        ("window_end", "DATE", end),
     ]
-    job_config = bigquery.QueryJobConfig(
+    rows = run_query(
+        client,
+        query,
         query_parameters=params,
         maximum_bytes_billed=int(settings.max_query_gb) * (1024 ** 3),
     )
-    rows = client.query(query, job_config=job_config).result()
     df = rows.to_dataframe(create_bqstorage_client=False)
     if df.empty:
         df = pd.DataFrame(columns=["student_id", "grade", "school_id", "watched_video", "shared_work"])
@@ -520,21 +462,11 @@ def _render_pdf(df, school_name, district_name, state_name, date_range_label, ge
     return HTML(string=html).write_pdf()
 
 
-def _gcs_client(gcs_settings):
-    from google.cloud import storage
-    from google.oauth2 import service_account
-
-    info = json.loads(gcs_settings.credentials_json)
-    credentials = service_account.Credentials.from_service_account_info(info)
-    return storage.Client(project=gcs_settings.project_id, credentials=credentials)
-
-
 def _blob_path_for_school(school_id):
     return f"teacher_reporting/{school_id}.pdf"
 
 
-def _upload_pdf_to_gcs(client, gcs_settings, school_id, pdf_bytes):
-    bucket = client.bucket(gcs_settings.bucket_name)
+def _upload_pdf_to_gcs(bucket, school_id, pdf_bytes):
     blob = bucket.blob(_blob_path_for_school(school_id))
     blob.upload_from_string(pdf_bytes, content_type="application/pdf")
     return blob
@@ -547,10 +479,6 @@ def _signed_url(blob, minutes=DEFAULT_SIGNED_URL_TTL_MINUTES):
     except Exception:
         blob.make_public()
         return blob.public_url
-
-
-def _constant_time_eq(a, b):
-    return hmac.compare_digest(str(a or ""), str(b or ""))
 
 
 def _manifest_path(base):
@@ -575,33 +503,33 @@ def _write_manifest(base, manifest):
 
 
 def _acquire_lock():
-    settings = frappe.get_single(SETTINGS_DOCTYPE)
-    status = settings.get("tsp_last_run_status")
-    started_at = settings.get("tsp_last_run_at")
+    settings = frappe.get_single("Teacher Reporting Job")
+    status = settings.get("last_run_status")
+    started_at = settings.get("last_run_at")
     if status == "RUNNING" and started_at:
         elapsed = (now_datetime() - frappe.utils.get_datetime(started_at)).total_seconds() / 60
         if elapsed < LOCK_STALE_MINUTES:
             return False
-    settings.tsp_last_run_status = "RUNNING"
-    settings.tsp_last_run_at = now_datetime()
+    settings.last_run_status = "RUNNING"
+    settings.last_run_at = now_datetime()
     settings.save(ignore_permissions=True)
     frappe.db.commit()
     return True
 
 
 def _append_log_line(line):
-    settings = frappe.get_single(SETTINGS_DOCTYPE)
-    existing = settings.get("tsp_last_run_log") or ""
+    settings = frappe.get_single("Teacher Reporting Job")
+    existing = settings.get("last_run_log") or ""
     lines = (existing.splitlines() + [line])[-50:]
-    settings.tsp_last_run_log = "\n".join(lines)
+    settings.last_run_log = "\n".join(lines)
     settings.save(ignore_permissions=True)
     frappe.db.commit()
 
 
 def _persist_run(status, stats=None, error=None):
-    settings = frappe.get_single(SETTINGS_DOCTYPE)
-    settings.tsp_last_run_at = now_datetime()
-    settings.tsp_last_run_status = status
+    settings = frappe.get_single("Teacher Reporting Job")
+    settings.last_run_at = now_datetime()
+    settings.last_run_status = status
     if status == "OK":
         s = stats or {}
         log_line = (
@@ -612,14 +540,14 @@ def _persist_run(status, stats=None, error=None):
         )
     else:
         log_line = f"{now_datetime()} — ERROR: {error}"
-    existing = settings.get("tsp_last_run_log") or ""
+    existing = settings.get("last_run_log") or ""
     lines = (existing.splitlines() + [log_line])[-50:]
-    settings.tsp_last_run_log = "\n".join(lines)
+    settings.last_run_log = "\n".join(lines)
     settings.save(ignore_permissions=True)
     frappe.db.commit()
 
 
-def _render_and_upload_one_school(school_id, chunk, school_info, gcs_client, gcs_settings,
+def _render_and_upload_one_school(school_id, chunk, school_info, bucket,
                                    date_range_label, generated_on):
     school_name = school_info.get(school_id) if school_info else None
     if not school_name:
@@ -638,7 +566,7 @@ def _render_and_upload_one_school(school_id, chunk, school_info, gcs_client, gcs
     try:
         agg = _compute_school_aggregates(chunk)
         pdf_bytes = _render_pdf(chunk, name, district_name, state_name, date_range_label, generated_on)
-        blob = _upload_pdf_to_gcs(gcs_client, gcs_settings, school_id, pdf_bytes)
+        blob = _upload_pdf_to_gcs(bucket, school_id, pdf_bytes)
         return {
             "school_id": school_id, "ok": True,
             "blob_path": blob.name,
@@ -696,8 +624,9 @@ def run_weekly_extract():
         return {"status": "failure"}
 
     try:
-        gcs_settings = _get_gcs_settings(settings.gcs_settings_name)
-        gcs_client = _gcs_client(gcs_settings)
+        bucket = get_gcs_bucket(settings.gcs_settings_name)
+        if bucket is None:
+            raise ValueError(f"GCS Settings {settings.gcs_settings_name} is missing or not enabled")
     except Exception:
         frappe.log_error(frappe.get_traceback(), "teacher_reporting: GCS setup failed")
         _persist_run("ERROR", error="GCS Settings invalid or GCS client init failed")
@@ -752,7 +681,7 @@ def run_weekly_extract():
                 futures = {
                     pool.submit(
                         _render_and_upload_one_school, school_id, chunk, school_info,
-                        gcs_client, gcs_settings, date_range_label, generated_on,
+                        bucket, date_range_label, generated_on,
                     ): school_id
                     for school_id, chunk in batch
                 }
@@ -847,17 +776,13 @@ def _manifest_age_days(manifest):
 def teacher_report(school_id, api_key):
     try:
         settings = get_reporting_settings()
-        if not settings.secret or not _constant_time_eq(api_key, settings.secret):
+        if not authenticate_api_key(api_key):
             frappe.local.response.update({"status": "failure", "message": "Invalid or missing API key"})
             return
 
         school_id = _normalize_school_id(school_id)
         if not school_id or not _looks_like_school_id(school_id):
             frappe.local.response.update({"status": "failure", "message": "school_id is required/invalid"})
-            return
-
-        if not settings.parquet_dir:
-            frappe.local.response.update({"status": "failure", "message": "Reporting is not configured"})
             return
 
         base = _resolve_parquet_base(settings.parquet_dir)
@@ -907,11 +832,11 @@ def teacher_report(school_id, api_key):
             return
 
         try:
-            gcs_settings = _get_gcs_settings(settings.gcs_settings_name)
-            client = _gcs_client(gcs_settings)
-            bucket = client.bucket(gcs_settings.bucket_name)
+            bucket = get_gcs_bucket(settings.gcs_settings_name)
+            if bucket is None:
+                raise ValueError(f"GCS Settings {settings.gcs_settings_name} is missing or not enabled")
             blob = bucket.blob(entry["blob_path"])
-            if not blob.exists(client):
+            if not blob.exists(bucket.client):
                 frappe.local.response.update({
                     "status": "failure",
                     "message": f"Report file for {school_id} is missing in storage. Please retry after the next run.",
@@ -961,18 +886,14 @@ def get_teacher_reporting_stats():
         "schools_uploaded": 0,
         "schools_skipped": 0,
         "skipped_reasons": {},
-        "last_run_at": settings.get("tsp_last_run_at") if hasattr(settings, "get") else None,
+        "last_run_at": None,
         "last_run_status": None,
         "message": None,
     }
 
-    bq_settings_doc = frappe.get_single(SETTINGS_DOCTYPE)
-    result["last_run_at"] = bq_settings_doc.get("tsp_last_run_at")
-    result["last_run_status"] = bq_settings_doc.get("tsp_last_run_status")
-
-    if not settings.parquet_dir:
-        result["message"] = "Parquet Storage Dir is not configured."
-        return result
+    job = frappe.get_single("Teacher Reporting Job")
+    result["last_run_at"] = job.get("last_run_at")
+    result["last_run_status"] = job.get("last_run_status")
 
     result["configured"] = True
 
@@ -1048,10 +969,10 @@ def _resolve_parquet_base(parquet_dir_value):
 
 
 def clear_parquet_cache():
-    settings = frappe.get_single(SETTINGS_DOCTYPE)
+    settings = frappe.get_single("Teacher Reporting Job")
 
-    status = settings.get("tsp_last_run_status")
-    started_at = settings.get("tsp_last_run_at")
+    status = settings.get("last_run_status")
+    started_at = settings.get("last_run_at")
     if status == "RUNNING" and started_at:
         elapsed = (now_datetime() - frappe.utils.get_datetime(started_at)).total_seconds() / 60
         if elapsed < LOCK_STALE_MINUTES:
@@ -1060,7 +981,7 @@ def clear_parquet_cache():
                 "(or wait a few minutes if it looks stuck)."
             )
 
-    parquet_dir_value = settings.get("tsp_parquet_dir")
+    parquet_dir_value = get_reporting_settings().parquet_dir
     base = _resolve_parquet_base(parquet_dir_value)
 
     if not base.exists():
@@ -1095,9 +1016,9 @@ def clear_parquet_cache():
             pass
 
     log_line = f"{now_datetime()} — CACHE CLEARED by {frappe.session.user} ({len(cleared)} paths)"
-    existing = settings.get("tsp_last_run_log") or ""
+    existing = settings.get("last_run_log") or ""
     lines = (existing.splitlines() + [log_line])[-50:]
-    settings.tsp_last_run_log = "\n".join(lines)
+    settings.last_run_log = "\n".join(lines)
     settings.save(ignore_permissions=True)
     frappe.db.commit()
 

@@ -1,0 +1,19 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-11-14 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": ["last_run_at", "last_run_status", "last_run_log"],
+ "fields": [
+  {"fieldname": "last_run_at", "fieldtype": "Datetime", "label": "Last Run At", "read_only": 1},
+  {"fieldname": "last_run_status", "fieldtype": "Data", "label": "Last Run Status", "read_only": 1},
+  {"fieldname": "last_run_log", "fieldtype": "Long Text", "label": "Run Log", "read_only": 1}
+ ],
+ "issingle": 1,
+ "module": "Tap Lms",
+ "name": "Teacher Reporting Job",
+ "owner": "Administrator",
+ "permissions": [{"read": 1, "write": 1, "role": "System Manager"}],
+ "track_changes": 1
+}

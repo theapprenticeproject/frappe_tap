@@ -1,4 +1,4 @@
-"""Pull image URLs from BigQuery and attach them to Teacher Submissions.
+"""Synchronize teacher submission images from BigQuery.
 
 Glific writes every inbound WhatsApp message into BigQuery. The images a teacher
 sends land there as `gcs_url` rows. Frappe has the submission record. Nothing
@@ -14,22 +14,22 @@ take the first submission that follows it. See images.find_submission().
 
 Run manually:
     bench --site tap_lms.localhost execute \
-        tap_lms.teacher_bot.bigquery_sync.sync_submission_images
+        tap_lms.teacher_bot.teacher_submission_sync.sync_submission_images
 
 Dry run (queries, matches, writes nothing):
     bench --site tap_lms.localhost execute \
-        tap_lms.teacher_bot.bigquery_sync.sync_submission_images \
+        tap_lms.teacher_bot.teacher_submission_sync.sync_submission_images \
         --kwargs "{'dry_run': True}"
 """
-
-import json
 
 import frappe
 from frappe.utils import get_datetime, now_datetime
 
 from tap_lms.teacher_bot.images import attach_images, find_submission
+from tap_lms.utils.bigquery_helper import get_bigquery_client, run_query
+from tap_lms.utils.scheduled_jobs import get_job_config
 
-SETTINGS_DOCTYPE = "BigQuery Settings"
+SCHEDULED_JOB_NAME = "teacher_submission_sync.sync_submission_images"
 
 # Grouping explained:
 #   Glific labels the message that starts a flow step (flow_label). Every media
@@ -93,54 +93,22 @@ LIMIT @batch_limit
 
 
 # ---------------------------------------------------------------------------
-# settings and client
+# connection check
 # ---------------------------------------------------------------------------
-
-def get_settings():
-    settings = frappe.get_single(SETTINGS_DOCTYPE)
-    return frappe._dict({
-        "enabled": int(settings.enabled or 0),
-        "project_id": (settings.project_id or "").strip(),
-        "messages_table": (settings.messages_table or "").strip(),
-        "media_table": (settings.media_table or "").strip(),
-        "credentials_json": settings.get_password("credentials_json", raise_exception=False),
-        "lookback_days": int(settings.lookback_days or 2),
-        "match_window_minutes": int(settings.match_window_minutes or 5),
-        "batch_limit": int(settings.batch_limit or 200),
-        "source_timezone": (settings.source_timezone or "UTC").strip(),
-        "flow_label_filter": (settings.flow_label_filter or "%image_capture%").strip(),
-    })
-
-
-def get_client(settings=None):
-    """Build a BigQuery client from the credentials in Settings."""
-    from google.cloud import bigquery
-    from google.oauth2 import service_account
-
-    settings = settings or get_settings()
-
-    if not settings.credentials_json:
-        raise ValueError("BigQuery Settings has no credentials_json")
-    if not settings.project_id:
-        raise ValueError("BigQuery Settings has no project_id")
-
-    info = json.loads(settings.credentials_json)
-    credentials = service_account.Credentials.from_service_account_info(info)
-    return bigquery.Client(project=settings.project_id, credentials=credentials)
-
 
 def test_connection():
     """Prove the credentials work before debugging anything else.
 
     bench --site tap_lms.localhost execute \
-        tap_lms.teacher_bot.bigquery_sync.test_connection
+        tap_lms.teacher_bot.teacher_submission_sync.test_connection
     """
-    settings = get_settings()
-    client = get_client(settings)
-    rows = list(client.query(
+    settings = get_job_config(SCHEDULED_JOB_NAME).parameters
+    client = get_bigquery_client()
+    rows = list(run_query(
+        client,
         f"SELECT COUNT(*) AS n FROM `{settings.messages_table}` "
-        f"WHERE inserted_at >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 1 DAY)"
-    ).result())
+        f"WHERE inserted_at >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 1 DAY)",
+    ))
     count = rows[0]["n"] if rows else 0
     print(f"OK — {count} inbound messages in the last day")
     return count
@@ -176,7 +144,7 @@ def to_system_time(value, source_timezone="UTC"):
         frappe.log_error(
             f"Timezone conversion failed: {source_timezone} -> system. "
             f"Using the raw value.\n\n{frappe.get_traceback()}",
-            "bigquery_sync timezone",
+            "teacher_submission_sync timezone",
         )
         return naive
 
@@ -187,23 +155,22 @@ def to_system_time(value, source_timezone="UTC"):
 
 def fetch_rows(settings=None, client=None):
     """Run the grouping query and return the submission-level rows."""
-    from google.cloud import bigquery
-
-    settings = settings or get_settings()
-    client = client or get_client(settings)
+    settings = settings or get_job_config(SCHEDULED_JOB_NAME).parameters
+    client = client or get_bigquery_client()
 
     query = QUERY_TEMPLATE.format(
         messages_table=settings.messages_table,
         media_table=settings.media_table,
     )
-    job_config = bigquery.QueryJobConfig(
+    return list(run_query(
+        client,
+        query,
         query_parameters=[
-            bigquery.ScalarQueryParameter("lookback_days", "INT64", settings.lookback_days),
-            bigquery.ScalarQueryParameter("flow_label_filter", "STRING", settings.flow_label_filter),
-            bigquery.ScalarQueryParameter("batch_limit", "INT64", settings.batch_limit),
-        ]
-    )
-    return list(client.query(query, job_config=job_config).result())
+            ("lookback_days", "INT64", settings.lookback_days),
+            ("flow_label_filter", "STRING", settings.flow_label_filter),
+            ("batch_limit", "INT64", settings.batch_limit),
+        ],
+    ))
 
 
 def sync_submission_images(dry_run=False, lookback_days=None):
@@ -217,9 +184,10 @@ def sync_submission_images(dry_run=False, lookback_days=None):
         not_found=0, ambiguous=0, errors=0,
     )
 
-    settings = get_settings()
-    if not settings.enabled:
-        return dict(summary, message="BigQuery Settings is not enabled")
+    job = get_job_config(SCHEDULED_JOB_NAME)
+    if not job.enabled:
+        return dict(summary, message="Teacher Submission Sync Job is not enabled")
+    settings = job.parameters
 
     if lookback_days:
         settings.lookback_days = int(lookback_days)
@@ -227,7 +195,7 @@ def sync_submission_images(dry_run=False, lookback_days=None):
     try:
         rows = fetch_rows(settings)
     except Exception:
-        frappe.log_error(frappe.get_traceback(), "bigquery_sync: query failed")
+        frappe.log_error(frappe.get_traceback(), "teacher_submission_sync: query failed")
         summary.errors += 1
         return dict(summary, message="Query failed — see Error Log")
 
@@ -290,7 +258,7 @@ def sync_submission_images(dry_run=False, lookback_days=None):
             summary.errors += 1
             frappe.log_error(
                 f"row={row.get('source_row_id')}\n\n{frappe.get_traceback()}",
-                "bigquery_sync: row failed",
+                "teacher_submission_sync: row failed",
             )
 
     if not dry_run:
@@ -302,7 +270,7 @@ def sync_submission_images(dry_run=False, lookback_days=None):
 def _record_run(summary):
     """Write the counts back to Settings so a rising not_found is visible."""
     try:
-        settings = frappe.get_single(SETTINGS_DOCTYPE)
+        settings = frappe.get_single("Teacher Submission Sync Job")
         settings.last_run_at = now_datetime()
         settings.last_run_summary = (
             f"rows={summary.rows} matched={summary.matched} "
@@ -314,4 +282,4 @@ def _record_run(summary):
         frappe.db.commit()
     except Exception:
         frappe.db.rollback()
-        frappe.log_error(frappe.get_traceback(), "bigquery_sync: could not record run")
+        frappe.log_error(frappe.get_traceback(), "teacher_submission_sync: could not record run")

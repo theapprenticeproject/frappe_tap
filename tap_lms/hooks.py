@@ -20,20 +20,17 @@ doc_events = {
 scheduler_events = {
     "cron": {
         # Teacher submission images: pull gcs_urls from BigQuery and attach them
-        # to the matching submission. Runs every night at 2 am. 
-        # The job exits immediately unless BigQuery Settings is
-        # enabled, so this is inert until someone turns it on.
+        # to the matching submission. Every night at 2 am. Exits immediately
+        # unless enabled in Custom Scheduled Jobs.
         "0 2 * * *": [
-            "tap_lms.teacher_bot.bigquery_sync.sync_submission_images",
+            "tap_lms.teacher_bot.teacher_submission_sync.sync_submission_images",
         ],
-        # Teacher Stats Poster: runs the read-only BigQuery query and pushes
-        # school-level stats to the Apps Script Web App. Every Monday at
-        # 3 am IST (Frappe system timezone). The job exits immediately
-        # unless "Enable Teacher Stats Poster" is checked in BigQuery
-        # Settings, so this is inert until someone turns it on. Fully
-        # independent of the image-sync job above and of Teacher Bot.
+        # Teacher reporting: runs the read-only BigQuery query, renders a PDF per
+        # school and uploads it to GCS. Every Monday at 3 am IST (Frappe system
+        # timezone). Exits immediately unless enabled in Custom Scheduled Jobs.
+        # Independent of the image-sync job above and of Teacher Bot.
         "0 3 * * 1": [
-            "tap_lms.bigquery.teacher.teacher_reporting.run_weekly_extract",
+            "tap_lms.teacher_bot.teacher_reporting.run_weekly_extract",
         ],
         # Student feedback delivery (Glific feedback flow), three times a day.
         # Cron expressions use the Frappe system timezone (Asia/Kolkata):
@@ -41,8 +38,8 @@ scheduler_events = {
         #   30 16 * * * — 16:30 IST
         #   0 21 * * *  — 21:00 IST
         # Feedback is generated continuously; only the Glific flow start is
-        # batched. No-op if "Enable Batch Feedback Delivery" is
-        # unchecked in Feedback Delivery Settings.
+        # batched. No-op unless enabled in Custom Scheduled Jobs and "Enable
+        # Batch Feedback Delivery" is checked in Feedback Delivery Settings.
         "0 15 * * *": [
             "tap_lms.imgana.feedback_delivery.dispatch_1500_ist",
         ],

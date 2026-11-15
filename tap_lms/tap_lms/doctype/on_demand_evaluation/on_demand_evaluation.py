@@ -7,7 +7,6 @@ from io import BytesIO
 import frappe
 from frappe.model.document import Document
 from frappe.utils import now_datetime
-from google.auth.transport.requests import AuthorizedSession
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
@@ -15,10 +14,12 @@ from openpyxl.workbook.properties import CalcProperties
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from tap_lms.imgana.submission import enqueue_submissions_batch
-from tap_lms.onboarding.backend_upload_utils import (
-	get_google_service_account_credentials,
+from tap_lms.utils.google_drive_helper import (
+	get_google_service_account_info,
 	upload_bytes_to_google_drive,
 )
+from tap_lms.utils.google_sheet_helper import GoogleSheetsClient
+from tap_lms.utils.scheduled_jobs import get_job_config
 
 # Built by scripts/private/list_prod_learning_unit_names_to_google_sheet.py:
 # one tab per "<vertical> <level>".
@@ -101,23 +102,20 @@ def _get_assignment_ids(doc):
 	verticals = [row.vertical for row in doc.verticals] or (
 		frappe.get_meta("On Demand Evaluation Vertical").get_field("vertical").options.split("\n")
 	)
-	session = AuthorizedSession(get_google_service_account_credentials())
-	metadata = _get_json(session, SHEETS_URL, {"fields": "sheets.properties.title"})
-	titles = [
-		sheet["properties"]["title"]
-		for sheet in metadata["sheets"]
-		if any(sheet["properties"]["title"].startswith(f"{vertical} ") for vertical in verticals)
-	]
+	spreadsheet_id = SHEETS_URL.rsplit("/", 1)[-1]
+	sheets = GoogleSheetsClient(get_google_service_account_info())
+	titles = sheets.get_tab_titles(spreadsheet_id)
+	titles = [title for title in titles if any(title.startswith(f"{vertical} ") for vertical in verticals)]
 	if not titles:
 		frappe.throw(f"No sheet tabs found for verticals {verticals}.")
 
 	ranges = ["'{}'".format(title.replace("'", "''")) for title in titles]
-	data = _get_json(session, f"{SHEETS_URL}/values:batchGet", {"ranges": ranges})
+	data = sheets.get_batch_values(spreadsheet_id, ranges)
 
 	unit_activity_no = _normalize(doc.unit_activity_no)
 	program = _normalize(doc.program)
 	assignment_ids = []
-	for value_range in data["valueRanges"]:
+	for value_range in data:
 		header, *rows = value_range.get("values") or [[]]
 		unit_col = header.index("Unit & Activity No.")
 		program_col = header.index("Program")
@@ -129,18 +127,15 @@ def _get_assignment_ids(doc):
 	return assignment_ids
 
 
-def _get_json(session, url, params):
-	response = session.get(url, params=params, timeout=120)
-	response.raise_for_status()
-	return response.json()
-
-
 def _normalize(value):
 	return " ".join(str(value).split()).lower()
 
 
 def check_queued_evaluations():
 	"""Cron: complete Queued jobs once none of their submissions is still Processing."""
+	if not get_job_config("on_demand_evaluation.check_queued_evaluations").enabled:
+		return
+
 	for name in frappe.get_all("On Demand Evaluation", filters={"status": "Queued"}, pluck="name"):
 		if not frappe.db.exists("Submission", {"rubric_eval_job": name, "rubric_eval_status": "Processing"}):
 			doc = frappe.get_doc("On Demand Evaluation", name)

@@ -1,8 +1,10 @@
-"""Google Sheets API client and cell/range helpers used by the learning unit import."""
+"""Reusable Google Sheets API client and cell/range helpers."""
 
 from __future__ import annotations
 
+import random
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse
@@ -17,6 +19,8 @@ GOOGLE_SHEETS_SCOPES = (
     "https://www.googleapis.com/auth/drive.readonly",
 )
 REQUEST_TIMEOUT = 60
+RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+MAX_RETRIES = 5
 SHEETS_API_BASE = "https://sheets.googleapis.com/v4/spreadsheets"
 
 
@@ -44,6 +48,34 @@ class GoogleSheetsClient:
             "gridProperties(rowCount,columnCount,frozenRowCount,frozenColumnCount))"
         )
         return self._get_json(f"{SHEETS_API_BASE}/{spreadsheet_id}", {"fields": fields})
+
+    def get_tab_titles(self, spreadsheet_id: str) -> list[str]:
+        metadata = self._get_json(
+            f"{SHEETS_API_BASE}/{spreadsheet_id}",
+            {"fields": "sheets.properties.title"},
+        )
+        return [
+            sheet["properties"]["title"]
+            for sheet in metadata.get("sheets") or []
+        ]
+
+    def get_batch_values(
+        self,
+        spreadsheet_id: str,
+        ranges: list[str],
+    ) -> list[dict[str, Any]]:
+        data = self._get_json(
+            f"{SHEETS_API_BASE}/{spreadsheet_id}/values:batchGet",
+            {"ranges": ranges},
+        )
+        return data.get("valueRanges") or []
+
+    def batch_update_values(self, spreadsheet_id: str, data: list[dict[str, Any]]) -> None:
+        self._post_json(
+            f"{SHEETS_API_BASE}/{spreadsheet_id}/values:batchUpdate",
+            {"valueInputOption": "RAW", "data": data},
+            retries=MAX_RETRIES,
+        )
 
     def get_grid(self, spreadsheet_id: str, sheet_name: str, a1_range: str) -> list[list[Cell]]:
         full_range = f"{quote_sheet_name(sheet_name)}!{a1_range}"
@@ -157,8 +189,8 @@ class GoogleSheetsClient:
     def _get_json(self, url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._request_json("GET", url, params=params)
 
-    def _post_json(self, url: str, body: dict[str, Any]) -> dict[str, Any]:
-        return self._request_json("POST", url, json_body=body)
+    def _post_json(self, url: str, body: dict[str, Any], retries: int = 0) -> dict[str, Any]:
+        return self._request_json("POST", url, json_body=body, retries=retries)
 
     def _request_json(
         self,
@@ -166,14 +198,21 @@ class GoogleSheetsClient:
         url: str,
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
+        retries: int = 0,
     ) -> dict[str, Any]:
-        response = self.session.request(
-            method,
-            url,
-            params=params or {},
-            json=json_body,
-            timeout=REQUEST_TIMEOUT,
-        )
+        for attempt in range(retries + 1):
+            response = self.session.request(
+                method,
+                url,
+                params=params or {},
+                json=json_body,
+                timeout=REQUEST_TIMEOUT,
+            )
+            if response.ok or response.status_code not in RETRYABLE_STATUSES or attempt == retries:
+                break
+            retry_after = response.headers.get("Retry-After", "")
+            backoff = 60.0 * (2 ** attempt) + random.random()
+            time.sleep(max(float(retry_after), backoff) if retry_after.isdigit() else backoff)
         if not response.ok:
             hint = ""
             if response.status_code in (403, 404) and self.service_account_email:

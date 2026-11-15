@@ -12,6 +12,7 @@ from tap_lms.onboarding.student_sheet_registration import (
     prepare_student_sheet_registration,
     upload_prepared_student_sheet_registration,
 )
+from tap_lms.utils.scheduled_jobs import get_job_config
 
 
 class StudentSheetRegistrationJob(Document):
@@ -244,6 +245,11 @@ def _set_summary_counts(docname: str, summary: dict) -> None:
 
 
 def enqueue_daily_student_sheet_registration() -> dict:
+    if not get_job_config(
+        "student_sheet_registration_job.enqueue_daily_student_sheet_registration"
+    ).enabled:
+        return {"status": "Disabled"}
+
     running_job = _get_running_job()
     if running_job:
         message = f"Daily student sheet registration skipped; job {running_job} is already running."

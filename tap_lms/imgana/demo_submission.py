@@ -4,6 +4,8 @@ from urllib.parse import urlparse
 
 import frappe
 
+GCS_SETTINGS_NAME = "central-phalanx-297915-Authenticated"
+
 
 GLIFIC_FEEDBACK_FLOW_ID = "34108"
 FEEDBACK_PIPELINE_MAX_RETRIES = 5
@@ -338,7 +340,7 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
         )
 
         if raw_submission and _looks_like_url(raw_submission):
-            from tap_lms.imgana.gcs_client import upload_to_gcs
+            from tap_lms.utils.gcs_client import upload_to_gcs
             from tap_lms.imgana.media_detection import detect_url_media_type
 
             media_type = detect_url_media_type(raw_submission, default="image")
@@ -348,6 +350,7 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
             uploaded_url = upload_to_gcs(
                 raw_submission,
                 submission_doc.name,
+                GCS_SETTINGS_NAME,
                 media_type=media_type,
             )
             frappe.logger("submission").info(

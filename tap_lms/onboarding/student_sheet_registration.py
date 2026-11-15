@@ -2,29 +2,20 @@ from __future__ import annotations
 
 import csv
 import json
-import random
 import re
-import time as time_module
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from io import BytesIO, StringIO
 from typing import Iterable
-from urllib.parse import quote
 
 import frappe
 from dateutil import parser as date_parser
-from google.auth.transport.requests import AuthorizedSession
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill
 
 from tap_lms.onboarding.backend_upload_utils import (
-    FAILED_ROWS_GCP_PROJECT_ID,
-    GCP_CREDENTIALS_PROJECT_ID,
     GLIFIC_CSV_HEADERS,
     GLIFIC_CONTACTS_FOLDER,
-    GOOGLE_SHEETS_READWRITE_SCOPES,
-    get_google_service_account_credentials as _get_google_service_account_credentials,
-    upload_bytes_to_gcs as _upload_bytes_to_gcs,
 )
 from tap_lms.onboarding.glific_contact_upload import (
     get_glific_collection as _get_glific_collection,
@@ -35,9 +26,17 @@ from tap_lms.tap_lms.doctype.student.student import (
     _reserve_next_student_name,
     student_in_blocked_batch,
 )
+from tap_lms.utils.google_sheet_helper import GoogleSheetsClient
+from tap_lms.utils.google_drive_helper import (
+    GCP_CREDENTIALS_PROJECT_ID,
+    ensure_google_drive_folder as _ensure_google_drive_folder,
+    get_google_service_account_info,
+    upload_bytes_to_google_drive as _upload_bytes_to_google_drive,
+)
 
 
 COURSE_SOURCE_SPREADSHEET_ID = "1rtaPJ23KcKfSbt6VY_Lu0HwgAOWwnzOHv5mup7wE3TU"
+STUDENT_SHEET_REGISTRATION_DRIVE_FOLDER_ID = "11HUrdZ4puxjF8fRFWyXuWFNhPbEZfg6V"
 
 FIXED_STUDENT_REGISTRATION_SHEETS = [
     {
@@ -92,7 +91,6 @@ PROCESS_STATUS_COMPLETE = "complete"
 PROCESS_STATUS_FAIL = "fail"
 GLIFIC_CONTACT_FIELD_SCHOOL_ID = "school_id"
 
-SHEETS_MAX_RETRIES = 5
 SHEETS_MAX_VALUE_RANGES_PER_REQUEST = 500
 SHEETS_MAX_REQUEST_BYTES = 1_800_000
 SHEETS_MAX_CELLS_PER_RANGE = 500
@@ -135,8 +133,8 @@ class SourceSheet:
 
 
 def prepare_student_sheet_registration(log_fn=None, progress_fn=None) -> dict:
-    session = _get_sheets_session()
-    sheets = _read_all_source_sheets(session, ensure_status_column=True)
+    sheets_client = _get_sheets_client()
+    sheets = _read_all_source_sheets(sheets_client, ensure_status_column=True)
 
     done_phones = _collect_done_phones(sheets)
     prepared_rows: list[dict] = []
@@ -183,7 +181,7 @@ def prepare_student_sheet_registration(log_fn=None, progress_fn=None) -> dict:
                 status_updates.append(_process_status_update(prepared, _process_status_for_row(prepared)))
 
     if status_updates:
-        _write_status_updates(session, status_updates)
+        _write_status_updates(sheets_client, status_updates)
 
     ready_rows = [row for row in prepared_rows if row.get("prepare_status") == "Ready"]
     failed_rows = [row for row in prepared_rows if row.get("prepare_status") != "Ready"]
@@ -223,7 +221,7 @@ def upload_prepared_student_sheet_registration(
     progress_fn=None,
 ) -> dict:
     import_user = (import_user or frappe.session.user or "Administrator").strip()
-    session = _get_sheets_session()
+    sheets_client = _get_sheets_client()
 
     ready_rows = [row for row in prepared_rows if row.get("prepare_status") == "Ready"]
     success_rows: list[dict] = []
@@ -268,7 +266,7 @@ def upload_prepared_student_sheet_registration(
             _emit(log_fn, f"[student-sheet-registration] row_failed row={row.get('row_number')} error={message}")
 
     if status_updates:
-        _write_status_updates(session, status_updates)
+        _write_status_updates(sheets_client, status_updates)
 
     failed_rows_file_url = _create_and_upload_failed_rows_workbook(failed_rows) if failed_rows else ""
     glific_contact_file_result = _create_and_upload_glific_contact_csvs(
@@ -517,24 +515,18 @@ def _find_existing_student(phone: str, student_name: str) -> str | None:
     return rows[0]["name"] if rows else None
 
 
-def _read_all_source_sheets(session: AuthorizedSession, ensure_status_column: bool) -> list[SourceSheet]:
+def _read_all_source_sheets(sheets_client: GoogleSheetsClient, ensure_status_column: bool) -> list[SourceSheet]:
     sheets = []
     for config in FIXED_STUDENT_REGISTRATION_SHEETS:
-        sheets.append(_read_source_sheet(session, config, ensure_status_column=ensure_status_column))
+        sheets.append(_read_source_sheet(sheets_client, config, ensure_status_column=ensure_status_column))
     return sheets
 
 
-def _read_source_sheet(session: AuthorizedSession, config: dict, ensure_status_column: bool) -> SourceSheet:
-    metadata = _sheets_get(
-        session,
-        f"https://sheets.googleapis.com/v4/spreadsheets/{config['spreadsheet_id']}",
-        params={
-            "fields": "properties.title,sheets(properties(sheetId,title,index))",
-        },
-    )
+def _read_source_sheet(sheets_client: GoogleSheetsClient, config: dict, ensure_status_column: bool) -> SourceSheet:
+    metadata = sheets_client.get_metadata(config["spreadsheet_id"])
     sheet_meta = _select_sheet_metadata(metadata, config["sheet_id"])
     sheet_title = sheet_meta["title"]
-    values = _get_sheet_values(session, config["spreadsheet_id"], sheet_title)
+    values = sheets_client.get_values(config["spreadsheet_id"], sheet_title)
     if not values:
         raise frappe.ValidationError(f"Sheet is empty: {config['spreadsheet_id']}")
 
@@ -548,7 +540,7 @@ def _read_source_sheet(session: AuthorizedSession, config: dict, ensure_status_c
         if not ensure_status_column:
             raise frappe.ValidationError("registration_status column is missing")
         status_column_index = len(header) + 1
-        _write_status_updates(session, [{
+        _write_status_updates(sheets_client, [{
             "spreadsheet_id": config["spreadsheet_id"],
             "range": _cell_range(sheet_title, status_column_index, 1),
             "value": REGISTRATION_STATUS_COLUMN,
@@ -560,7 +552,7 @@ def _read_source_sheet(session: AuthorizedSession, config: dict, ensure_status_c
         if not ensure_status_column:
             raise frappe.ValidationError(f"{PROCESS_STATUS_COLUMN} column is missing")
         process_status_column_index = len(header) + 1
-        _write_status_updates(session, [{
+        _write_status_updates(sheets_client, [{
             "spreadsheet_id": config["spreadsheet_id"],
             "range": _cell_range(sheet_title, process_status_column_index, 1),
             "value": PROCESS_STATUS_COLUMN,
@@ -625,77 +617,11 @@ def _select_sheet_metadata(metadata: dict, preferred_sheet_id: int) -> dict:
     )[0]
 
 
-def _get_sheet_values(session: AuthorizedSession, spreadsheet_id: str, sheet_title: str) -> list[list[str]]:
-    range_name = _quote_sheet_name(sheet_title)
-    data = _sheets_get(
-        session,
-        f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{quote(range_name, safe='')}",
-        params={"majorDimension": "ROWS"},
-    )
-    return data.get("values") or []
+def _get_sheets_client() -> GoogleSheetsClient:
+    return GoogleSheetsClient(get_google_service_account_info(GCP_CREDENTIALS_PROJECT_ID))
 
 
-def _get_sheets_session() -> AuthorizedSession:
-    credentials = _get_google_service_account_credentials(
-        GCP_CREDENTIALS_PROJECT_ID,
-        scopes=GOOGLE_SHEETS_READWRITE_SCOPES,
-    )
-    return AuthorizedSession(credentials)
-
-
-def _sheets_get(session: AuthorizedSession, url: str, params: dict | None = None) -> dict:
-    response = session.get(url, params=params or {}, timeout=120)
-    _raise_for_sheets_response(response)
-    return response.json()
-
-
-def _sheets_post(session: AuthorizedSession, url: str, body: dict) -> dict:
-    for retry_number in range(SHEETS_MAX_RETRIES + 1):
-        response = session.post(url, json=body, timeout=120)
-        if response.ok:
-            return response.json() if response.content else {}
-        if not _is_retryable_sheets_response(response) or retry_number == SHEETS_MAX_RETRIES:
-            _raise_for_sheets_response(response)
-
-        delay = _sheets_retry_delay(response, retry_number)
-        frappe.logger("tap_lms.student_sheet_registration").warning(
-            "Google Sheets API returned %s; retrying in %.1f seconds (attempt %s/%s)",
-            response.status_code,
-            delay,
-            retry_number + 1,
-            SHEETS_MAX_RETRIES,
-        )
-        time_module.sleep(delay)
-
-    return {}
-
-
-def _is_retryable_sheets_response(response) -> bool:
-    return int(response.status_code) in {429, 500, 502, 503, 504}
-
-
-def _sheets_retry_delay(response, retry_number: int) -> float:
-    base_delay = 60.0 * (2 ** retry_number) + random.random()
-    retry_after = str((response.headers or {}).get("Retry-After") or "").strip()
-    try:
-        if retry_after:
-            return max(float(retry_after), base_delay)
-    except ValueError:
-        pass
-    return base_delay
-
-
-def _raise_for_sheets_response(response) -> None:
-    if response.ok:
-        return
-    try:
-        detail = response.json()
-    except Exception:
-        detail = response.text
-    raise frappe.ValidationError(f"Google Sheets API failed: {response.status_code} {detail}")
-
-
-def _write_status_updates(session: AuthorizedSession, updates: list[dict]) -> None:
+def _write_status_updates(sheets_client: GoogleSheetsClient, updates: list[dict]) -> None:
     updates_by_sheet: dict[str, list[dict]] = {}
     for update in updates:
         value = str(update.get("value") or "")
@@ -707,14 +633,7 @@ def _write_status_updates(session: AuthorizedSession, updates: list[dict]) -> No
     for spreadsheet_id, data in updates_by_sheet.items():
         compacted_data = _compact_value_ranges(data)
         for chunk in _value_range_chunks(compacted_data):
-            _sheets_post(
-                session,
-                f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values:batchUpdate",
-                {
-                    "valueInputOption": "RAW",
-                    "data": chunk,
-                },
-            )
+            sheets_client.batch_update_values(spreadsheet_id, chunk)
 
 
 def _compact_value_ranges(data: list[dict]) -> list[dict]:
@@ -1205,8 +1124,15 @@ def _create_and_upload_rows_workbook(rows: list[dict], prefix: str, filename_pre
     buffer = BytesIO()
     wb.save(buffer)
     timestamp = frappe.utils.now_datetime().strftime("%Y%m%d_%H%M%S")
-    object_name = f"{prefix}/{filename_prefix}_{timestamp}.xlsx"
-    return _upload_bytes_to_gcs(buffer.getvalue(), object_name, FAILED_ROWS_GCP_PROJECT_ID)
+    parent_folder_id = STUDENT_SHEET_REGISTRATION_DRIVE_FOLDER_ID
+    for folder_name in prefix.split("/"):
+        parent_folder_id = _ensure_google_drive_folder(folder_name, parent_folder_id)
+    return _upload_bytes_to_google_drive(
+        buffer.getvalue(),
+        f"{filename_prefix}_{timestamp}.xlsx",
+        parent_folder_id,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 def _workbook_row(row: dict) -> list[str]:
@@ -1250,13 +1176,16 @@ def _create_and_upload_glific_contact_csvs(
         file_name = (
             f"student_sheet_registration_contacts_{timestamp}_part_{part_number:03d}.csv"
         )
-        object_name = f"{GLIFIC_CONTACTS_FOLDER}/{file_name}"
         csv_bytes = csv_text.encode("utf-8")
-        file_path = _upload_bytes_to_gcs(
+        parent_folder_id = _ensure_google_drive_folder(
+            GLIFIC_CONTACTS_FOLDER,
+            STUDENT_SHEET_REGISTRATION_DRIVE_FOLDER_ID,
+        )
+        file_path = _upload_bytes_to_google_drive(
             csv_bytes,
-            object_name,
-            FAILED_ROWS_GCP_PROJECT_ID,
-            content_type="text/csv",
+            file_name,
+            parent_folder_id,
+            "text/csv",
         )
         file_row = {
             "tab_name": f"Uploaded Rows Part {part_number:03d}",

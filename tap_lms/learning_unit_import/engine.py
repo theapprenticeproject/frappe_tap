@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 from urllib.parse import parse_qs, urlparse
 
-from tap_lms.learning_unit_import.sheets import (
+from tap_lms.utils.google_sheet_helper import (
     Cell,
     GoogleSheetsClient,
     cell_url,

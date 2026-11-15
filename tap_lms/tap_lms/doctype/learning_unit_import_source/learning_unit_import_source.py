@@ -4,7 +4,7 @@
 import frappe
 from frappe.model.document import Document
 
-from tap_lms.learning_unit_import.sheets import parse_sheet_ref
+from tap_lms.utils.google_sheet_helper import parse_sheet_ref
 
 
 @frappe.whitelist()

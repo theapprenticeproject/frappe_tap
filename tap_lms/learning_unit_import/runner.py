@@ -15,7 +15,7 @@ from tap_lms.learning_unit_import.engine import (
     parse_unit_filters,
     run_import,
 )
-from tap_lms.learning_unit_import.sheets import GoogleSheetsClient
+from tap_lms.utils.google_sheet_helper import GoogleSheetsClient
 from tap_lms.learning_unit_import.writer import FrappeWriter
 
 

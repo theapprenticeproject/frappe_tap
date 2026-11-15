@@ -1,0 +1,18 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-11-14 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": ["last_run_at", "last_run_summary"],
+ "fields": [
+  {"fieldname": "last_run_at", "fieldtype": "Datetime", "label": "Last Run At", "read_only": 1},
+  {"fieldname": "last_run_summary", "fieldtype": "Small Text", "label": "Last Run Summary", "read_only": 1}
+ ],
+ "issingle": 1,
+ "module": "Tap Lms",
+ "name": "Teacher Submission Sync Job",
+ "owner": "Administrator",
+ "permissions": [{"read": 1, "write": 1, "role": "System Manager"}],
+ "track_changes": 1
+}

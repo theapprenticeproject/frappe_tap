@@ -28,6 +28,7 @@ from tap_lms.utils.glific_integration import (
     get_contact_by_phone,
     start_contact_flow,
 )
+from tap_lms.utils.scheduled_jobs import get_job_config
 
 RUN_DOCTYPE = "Feedback Delivery Run"
 DLQ_LOG_TITLE = "Feedback Delivery DLQ - manual replay required"
@@ -58,8 +59,11 @@ def is_batch_delivery_enabled():
     return bool(frappe.get_cached_doc("Feedback Delivery Settings").enable_batch_delivery)
 
 
-def dispatch():
+def dispatch(job_key):
     """Start a feedback delivery run."""
+    if not get_job_config(job_key).enabled:
+        return
+
     settings = frappe.get_cached_doc("Feedback Delivery Settings")
     if not settings.enable_batch_delivery:
         return
@@ -91,15 +95,15 @@ def dispatch():
 # Frappe identifies Scheduled Job Type records by method name, so each cron
 # expression needs a distinct callable even though all windows do the same work.
 def dispatch_1500_ist():
-    return dispatch()
+    return dispatch("feedback_delivery.dispatch_1500_ist")
 
 
 def dispatch_1630_ist():
-    return dispatch()
+    return dispatch("feedback_delivery.dispatch_1630_ist")
 
 
 def dispatch_2100_ist():
-    return dispatch()
+    return dispatch("feedback_delivery.dispatch_2100_ist")
 
 
 def process_chunk(run_name, cursor_ts=None, cursor_name=""):
