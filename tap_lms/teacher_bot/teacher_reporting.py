@@ -197,17 +197,20 @@ def _resolve_student_names_bulk(student_ids):
     resolved = {}
     for i in range(0, len(clean_ids), STUDENT_CHUNK_SIZE):
         chunk = clean_ids[i:i + STUDENT_CHUNK_SIZE]
+        # NOTE: Student.name is the autonamed primary key (format: "ST.########"),
+        # NOT the mostly-empty `profile_id` field (only ~15/670k rows had it set).
+        # BigQuery's student_id values correspond to Student.name.
         rows = frappe.get_all(
             "Student",
-            filters={"profile_id": ["in", chunk]},
-            fields=["profile_id", "name1"],
+            filters={"name": ["in", chunk]},
+            fields=["name", "name1"],
         )
         for row in rows:
-            if not row.profile_id:
+            if not row.name:
                 continue
             clean_name = _titlecase_name(row.name1)
             if clean_name:
-                resolved[row.profile_id] = clean_name
+                resolved[row.name] = clean_name
     return resolved
 
 
