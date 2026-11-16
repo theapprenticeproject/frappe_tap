@@ -1,6 +1,7 @@
 import json
 import re
 import shutil
+import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import timedelta
@@ -472,7 +473,7 @@ def _upload_pdf_to_gcs(bucket, school_id, pdf_bytes):
     return blob
 
 
-def _signed_url(blob, minutes=DEFAULT_SIGNED_URL_TTL_MINUTES):
+def _signed_url(blob, minutes):
     from datetime import timedelta as _td
     try:
         return blob.generate_signed_url(expiration=_td(minutes=minutes), method="GET")
@@ -502,34 +503,34 @@ def _write_manifest(base, manifest):
     tmp.replace(_manifest_path(base))
 
 
+def _run_in_progress():
+    last = frappe.db.get_value(
+        "Teacher Reporting Job", {}, ["status", "started_at"], order_by="creation desc", as_dict=True,
+    )
+    if not last or last.status != "RUNNING":
+        return False
+    elapsed = (now_datetime() - frappe.utils.get_datetime(last.started_at)).total_seconds() / 60
+    return elapsed < LOCK_STALE_MINUTES
+
+
 def _acquire_lock():
-    settings = frappe.get_single("Teacher Reporting Job")
-    status = settings.get("last_run_status")
-    started_at = settings.get("last_run_at")
-    if status == "RUNNING" and started_at:
-        elapsed = (now_datetime() - frappe.utils.get_datetime(started_at)).total_seconds() / 60
-        if elapsed < LOCK_STALE_MINUTES:
-            return False
-    settings.last_run_status = "RUNNING"
-    settings.last_run_at = now_datetime()
-    settings.save(ignore_permissions=True)
+    if _run_in_progress():
+        return None
+    run = frappe.get_doc({
+        "doctype": "Teacher Reporting Job", "status": "RUNNING", "started_at": now_datetime(),
+    }).insert(ignore_permissions=True)
     frappe.db.commit()
-    return True
+    return run
 
 
-def _append_log_line(line):
-    settings = frappe.get_single("Teacher Reporting Job")
-    existing = settings.get("last_run_log") or ""
-    lines = (existing.splitlines() + [line])[-50:]
-    settings.last_run_log = "\n".join(lines)
-    settings.save(ignore_permissions=True)
+def _append_log_line(run, line):
+    run.log = f"{run.log}\n{line}" if run.log else line
+    run.save(ignore_permissions=True)
     frappe.db.commit()
 
 
-def _persist_run(status, stats=None, error=None):
-    settings = frappe.get_single("Teacher Reporting Job")
-    settings.last_run_at = now_datetime()
-    settings.last_run_status = status
+def _persist_run(run, status, stats=None, error=None):
+    run.status = status
     if status == "OK":
         s = stats or {}
         log_line = (
@@ -539,12 +540,11 @@ def _persist_run(status, stats=None, error=None):
             f"duration_s={s.get('duration_s', 0)}"
         )
     else:
+        run.error = error
+        if sys.exc_info()[0]:
+            run.traceback = frappe.get_traceback()
         log_line = f"{now_datetime()} — ERROR: {error}"
-    existing = settings.get("last_run_log") or ""
-    lines = (existing.splitlines() + [log_line])[-50:]
-    settings.last_run_log = "\n".join(lines)
-    settings.save(ignore_permissions=True)
-    frappe.db.commit()
+    _append_log_line(run, log_line)
 
 
 def _render_and_upload_one_school(school_id, chunk, school_info, bucket,
@@ -594,13 +594,14 @@ def run_weekly_extract():
     if not settings.enabled:
         return {"status": "disabled"}
 
+    run = _acquire_lock()
+    if not run:
+        return {"status": "skipped", "message": "already running"}
+
     ok, missing_fields = _required_fields_ok(settings)
     if not ok:
-        _persist_run("ERROR", error=f"Missing settings: {', '.join(missing_fields)}")
+        _persist_run(run, "ERROR", error=f"Missing settings: {', '.join(missing_fields)}")
         return {"status": "failure", "message": f"Missing settings: {', '.join(missing_fields)}"}
-
-    if not _acquire_lock():
-        return {"status": "skipped", "message": "already running"}
 
     base = _resolve_parquet_base(settings.parquet_dir)
 
@@ -611,7 +612,7 @@ def run_weekly_extract():
         df = _validate_and_normalize(df)
     except Exception:
         frappe.log_error(frappe.get_traceback(), "teacher_reporting: query failed")
-        _persist_run("ERROR", error="BigQuery extract failed")
+        _persist_run(run, "ERROR", error="BigQuery extract failed")
         return {"status": "failure"}
 
     try:
@@ -620,7 +621,7 @@ def run_weekly_extract():
         df = _attach_resolved_names(df, name_map)
     except Exception:
         frappe.log_error(frappe.get_traceback(), "teacher_reporting: name resolution failed")
-        _persist_run("ERROR", error="Student name resolution failed")
+        _persist_run(run, "ERROR", error="Student name resolution failed")
         return {"status": "failure"}
 
     try:
@@ -629,7 +630,7 @@ def run_weekly_extract():
             raise ValueError(f"GCS Settings {settings.gcs_settings_name} is missing or not enabled")
     except Exception:
         frappe.log_error(frappe.get_traceback(), "teacher_reporting: GCS setup failed")
-        _persist_run("ERROR", error="GCS Settings invalid or GCS client init failed")
+        _persist_run(run, "ERROR", error="GCS Settings invalid or GCS client init failed")
         return {"status": "failure"}
 
     uploaded = {}
@@ -656,12 +657,13 @@ def run_weekly_extract():
         school_info = _resolve_school_names_bulk(sid for sid, _ in schools_with_names)
     except Exception:
         frappe.log_error(frappe.get_traceback(), "teacher_reporting: school name resolution failed")
-        _persist_run("ERROR", error="School name resolution failed")
+        _persist_run(run, "ERROR", error="School name resolution failed")
         return {"status": "failure"}
 
     generated_on = now_datetime().strftime("%d %b %Y")
 
     _append_log_line(
+        run,
         f"{now_datetime()} — extract done: rows={total_rows} schools_total="
         f"{len(schools_with_names) + len(skipped)} eligible={len(schools_with_names)} "
         f"skipped_upfront={len(skipped)} unresolved_name_rows={unresolved_total} "
@@ -724,6 +726,7 @@ def run_weekly_extract():
             )
 
         _append_log_line(
+            run,
             f"{now_datetime()} — batch {batch_idx}/{total_batches} done: "
             f"uploaded_so_far={len(uploaded)} skipped_so_far={len(skipped)} "
             f"upload_failures_so_far={upload_failed}"
@@ -741,7 +744,7 @@ def run_weekly_extract():
         _write_manifest(base, manifest)
     except Exception:
         frappe.log_error(frappe.get_traceback(), "teacher_reporting: manifest write failed")
-        _persist_run("ERROR", error="Manifest write failed (PDFs were still uploaded to GCS)")
+        _persist_run(run, "ERROR", error="Manifest write failed (PDFs were still uploaded to GCS)")
         return {
             "status": "failure",
             "message": "Manifest write failed; PDFs are in GCS but not yet indexed locally.",
@@ -757,7 +760,7 @@ def run_weekly_extract():
         "upload_failed": upload_failed,
         "duration_s": duration_s,
     }
-    _persist_run("OK", stats=stats)
+    _persist_run(run, "OK", stats=stats)
     return {"status": "success", **stats}
 
 
@@ -891,9 +894,12 @@ def get_teacher_reporting_stats():
         "message": None,
     }
 
-    job = frappe.get_single("Teacher Reporting Job")
-    result["last_run_at"] = job.get("last_run_at")
-    result["last_run_status"] = job.get("last_run_status")
+    last = frappe.db.get_value(
+        "Teacher Reporting Job", {}, ["started_at", "status"], order_by="creation desc", as_dict=True,
+    )
+    if last:
+        result["last_run_at"] = last.started_at
+        result["last_run_status"] = last.status
 
     result["configured"] = True
 
@@ -969,17 +975,11 @@ def _resolve_parquet_base(parquet_dir_value):
 
 
 def clear_parquet_cache():
-    settings = frappe.get_single("Teacher Reporting Job")
-
-    status = settings.get("last_run_status")
-    started_at = settings.get("last_run_at")
-    if status == "RUNNING" and started_at:
-        elapsed = (now_datetime() - frappe.utils.get_datetime(started_at)).total_seconds() / 60
-        if elapsed < LOCK_STALE_MINUTES:
-            raise ValueError(
-                "A weekly extract is currently running. Try again once it finishes "
-                "(or wait a few minutes if it looks stuck)."
-            )
+    if _run_in_progress():
+        raise ValueError(
+            "A weekly extract is currently running. Try again once it finishes "
+            "(or wait a few minutes if it looks stuck)."
+        )
 
     parquet_dir_value = get_reporting_settings().parquet_dir
     base = _resolve_parquet_base(parquet_dir_value)
