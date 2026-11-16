@@ -240,15 +240,19 @@ def _resolve_school_names_bulk(school_ids):
     school_rows = []
     for i in range(0, len(clean_ids), SCHOOL_CHUNK_SIZE):
         chunk = clean_ids[i:i + SCHOOL_CHUNK_SIZE]
+        # NOTE: School.name is the autonamed primary key (format:
+        # "{name1}-SC{#####}", i.e. values like "SC00000054"), NOT the
+        # `keyword` field (a separate slug like "tapschool:gpsn8100").
+        # BigQuery's school_id values correspond to School.name.
         school_rows.extend(frappe.get_all(
             "School",
-            filters={"keyword": ["in", chunk]},
-            fields=["keyword", "name1", "district", "state"],
+            filters={"name": ["in", chunk]},
+            fields=["name", "name1", "district", "state"],
         ))
 
     by_keyword = {}
     for row in school_rows:
-        kw = _normalize_school_id(row.keyword)
+        kw = _normalize_school_id(row.name)
         if kw and kw not in by_keyword:
             by_keyword[kw] = row
 
@@ -1019,10 +1023,9 @@ def clear_parquet_cache():
             pass
 
     log_line = f"{now_datetime()} — CACHE CLEARED by {frappe.session.user} ({len(cleared)} paths)"
-    existing = settings.get("last_run_log") or ""
+    existing = get_reporting_settings().get("last_run_log") or ""
     lines = (existing.splitlines() + [log_line])[-50:]
-    settings.last_run_log = "\n".join(lines)
-    settings.save(ignore_permissions=True)
+    frappe.db.set_value("Teacher Reporting Settings", "Teacher Reporting Settings", "last_run_log", "\n".join(lines))
     frappe.db.commit()
 
     return {"status": "success", "cleared": cleared, "count": len(cleared)}
