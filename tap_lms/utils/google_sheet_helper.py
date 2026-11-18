@@ -187,7 +187,7 @@ class GoogleSheetsClient:
         )
 
     def _get_json(self, url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        return self._request_json("GET", url, params=params)
+        return self._request_json("GET", url, params=params, retries=MAX_RETRIES)
 
     def _post_json(self, url: str, body: dict[str, Any], retries: int = 0) -> dict[str, Any]:
         return self._request_json("POST", url, json_body=body, retries=retries)

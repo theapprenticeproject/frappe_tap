@@ -161,6 +161,7 @@ class ActivityRow:
     sheet_name: str
     row_number: int
     row: list[Cell]
+    headers: list[list[Cell]]
     week_no: int
     skip_reason: str = ""
     filter_order: int = 0
@@ -567,6 +568,7 @@ def read_activity_rows(ctx: ImportContext, entry: MasterEntry) -> list[ActivityR
             sheet_name,
             row_index,
             row,
+            rows[:2],
             0,
             HK_EMPTY_SKIP_OUTPUT if is_blankish(submission_guidelines) else "",
             filter_order,
@@ -1069,19 +1071,7 @@ def parse_activity_quiz(ctx: ImportContext, activity: ActivityRow) -> list[QuizQ
         link_url, referenced_rows = linked_quiz
         return parse_external_quiz_sheet(ctx.sheets, link_url, referenced_rows, activity.spreadsheet_id)
 
-    activity_headers = read_activity_headers(ctx.sheets, activity.spreadsheet_id, activity.sheet_name)
-    return parse_structured_quiz_questions(activity_headers[0], activity_headers[1], row)
-
-
-def read_activity_headers(
-    sheets: GoogleSheetsClient,
-    spreadsheet_id: str,
-    sheet_name: str,
-) -> list[list[Cell]]:
-    rows = sheets.get_grid(spreadsheet_id, sheet_name, f"A1:{ACTIVITY_READ_END_COL}2")
-    if len(rows) < 2:
-        raise RuntimeError(f"Activity sheet has fewer than two header rows: {sheet_name}")
-    return rows[:2]
+    return parse_structured_quiz_questions(activity.headers[0], activity.headers[1], row)
 
 
 def find_external_quiz_link(row: list[Cell]) -> tuple[str, list[int]] | None:
