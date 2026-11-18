@@ -307,17 +307,10 @@ def _group_by_grade(df):
     if df.empty:
         return []
 
-    both = df["watched_video"].astype(bool) & df["shared_work"].astype(bool)
-    either = df["watched_video"].astype(bool) | df["shared_work"].astype(bool)
-    df["_status_rank"] = 2
-    df.loc[either, "_status_rank"] = 1
-    df.loc[both, "_status_rank"] = 0
-
-    df = df.sort_values(["_status_rank", "student_name"], kind="stable")
+    df = df.sort_values(["student_name"], kind="stable")
 
     groups = []
     for grade_label, chunk in df.groupby("grade", sort=False):
-        chunk = chunk.drop(columns="_status_rank")
         groups.append({
             "grade": grade_label,
             "students": chunk.to_dict("records"),
@@ -393,22 +386,21 @@ th, td {
   font-size: 11.5px;
 }
 th {
-  background: #EAF3ED;
-  color: #145C3A;
+  background: #E8E8E8;
+  color: #4A4A4A;
   font-weight: 700;
   font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: 0.3px;
   border-bottom: 1px solid #D9D9D9;
 }
-td { border-bottom: 1px solid #D9D9D9; }
+td { border-bottom: 1px solid #D9D9D9; background: #FFFFFF; }
+tr.row-both td { background: #EAF3ED; }
 td.name-col { width: 55%; text-align: left; color: #1C1C1C; font-weight: 600; }
 td.mark-col { width: 22.5%; }
 .icon-yes, .icon-no { font-weight: 700; font-size: 13px; }
 .icon-yes { color: #145C3A; }
 .icon-no { color: #A33A34; }
-.row-both td { background: #EAF3ED; }
-.row-partial td { background: #FFF6D9; }
 .footer {
   margin-top: 16px;
   padding-top: 7px;
@@ -435,7 +427,7 @@ td.mark-col { width: 22.5%; }
   </thead>
   <tbody>
     {% for s in g.students %}
-    <tr class="{% if s.watched_video and s.shared_work %}row-both{% else %}row-partial{% endif %}">
+    <tr{% if s.watched_video and s.shared_work %} class="row-both"{% endif %}>
       <td class="name-col">{{ s.student_name }}</td>
       <td class="mark-col">{% if s.watched_video %}<span class="icon-yes">&#10003;</span>{% else %}<span class="icon-no">&#10007;</span>{% endif %}</td>
       <td class="mark-col">{% if s.shared_work %}<span class="icon-yes">&#10003;</span>{% else %}<span class="icon-no">&#10007;</span>{% endif %}</td>
