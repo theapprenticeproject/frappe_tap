@@ -675,7 +675,24 @@ def run_weekly_extract():
     batches = list(_iter_batches(schools_with_names, batch_size))
     total_batches = len(batches)
 
+    # --- DEBUG (added): confirm we reached the batch-processing stage and
+    # record the exact parameters being used, so that if the job stops
+    # again we can tell whether it died before entering this stage at all.
+    _append_log_line(
+        run,
+        f"{now_datetime()} — starting batch processing: total_batches={total_batches} "
+        f"batch_size={batch_size} max_workers={max_workers} "
+        f"schools_to_render={len(schools_with_names)}"
+    )
+
     for batch_idx, batch in enumerate(batches, start=1):
+        # --- DEBUG (added): mark entry into each batch *before* the
+        # ThreadPoolExecutor block runs. If a run stops mid-batch (worker
+        # hang, OOM kill, process timeout), this line tells us which batch
+        # it was in, even though the matching "batch ... done" line below
+        # never gets written.
+        _append_log_line(run, f"{now_datetime()} — batch {batch_idx}/{total_batches} starting")
+
         batch_error_samples = []
         try:
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
