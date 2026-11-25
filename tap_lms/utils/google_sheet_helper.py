@@ -381,6 +381,14 @@ def sheet_row_count(metadata: dict[str, Any], sheet_name: str) -> int:
     return 1000
 
 
+def sheet_column_count(metadata: dict[str, Any], sheet_name: str) -> int:
+    for sheet in metadata.get("sheets") or []:
+        props = sheet.get("properties") or {}
+        if props.get("title") == sheet_name:
+            return int((props.get("gridProperties") or {})["columnCount"])
+    raise RuntimeError(f"Could not resolve column count for tab: {sheet_name}")
+
+
 def get_cell_text(row: list[Cell], index: int) -> str:
     return row[index].text if 0 <= index < len(row) else ""
 

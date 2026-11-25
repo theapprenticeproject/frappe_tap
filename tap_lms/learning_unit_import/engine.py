@@ -19,10 +19,12 @@ from tap_lms.utils.google_sheet_helper import (
     clean,
     col_to_index,
     get_cell_text,
+    index_to_col,
     is_blankish,
     normalize,
     parse_sheet_ref,
     resolve_sheet_name,
+    sheet_column_count,
     sheet_id_for_name,
     sheet_row_count,
     strip_url_tracking_parameters,
@@ -50,57 +52,107 @@ ASSIGNMENT_FLOW_COURSE_NAME_MAP = {
     "Science": "Science Lab",
 }
 
-LANGUAGES = ("English", "Hindi", "Marathi", "Punjabi")
-TRANSLATION_LANGUAGES = ("Hindi", "Marathi", "Punjabi")
+LANGUAGES = ("English", "Hindi", "Marathi", "Punjabi", "Telugu")
+TRANSLATION_LANGUAGES = ("Hindi", "Marathi", "Punjabi", "Telugu")
 
 
 # ---------------------------------------------------------------------------
 # Sheet columns.
 # ---------------------------------------------------------------------------
 
-COL_UNIT_ACTIVITY = "A"
-COL_ACTIVITY_TYPE = "B"
-COL_ACTIVITY_NAME = "C"
-COL_DESCRIPTION = "E"
-COL_OBJECTIVE = "F"
-COL_OUTCOMES = "G"
-COL_ENGLISH_SCRIPT = "N"
-COL_HINDI_SCRIPT = "O"
-COL_MARATHI_SCRIPT = "P"
-COL_PUNJABI_SCRIPT = "Q"
+# Activity sheet columns are found by header: (row 1 section, text within the row 2 header),
+# both normalized. Row 1 holds merged section titles; an empty section matches any section.
+# Section titles spelled differently in some sheets.
+SECTION_ALIASES = {
+    "yt links": "youtube links",
+    "telegu quiz": "telugu quiz",
+}
 
-MAIN_QUIZ_START_COL = "R"
-MAIN_QUIZ_END_COL = "DM"
+COL_UNIT_ACTIVITY = ("", "unit & activity no")
+COL_ACTIVITY_TYPE = ("", "type")
+COL_ACTIVITY_NAME = ("", "activity name")
+COL_DESCRIPTION = ("", "description")
+COL_HINDI_SCRIPT = ("", "hindi script")
+COL_MARATHI_SCRIPT = ("", "marathi script")
+COL_PUNJABI_SCRIPT = ("", "punjabi script")
 
-COL_DRIVE_HINGLISH = "GP"
-COL_DRIVE_HINDI = "GQ"
-COL_DRIVE_MARATHI = "GR"
-COL_DRIVE_PUNJABI = "GS"
+# The main quiz runs from the first "Correct Option" up to the first Plio section.
+COL_MAIN_QUIZ_START = ("", "correct option")
+COL_MAIN_QUIZ_END = ("english plio", "")
 
-COL_YOUTUBE_HINGLISH = "GT"
-COL_YOUTUBE_HINDI = "GU"
-COL_YOUTUBE_MARATHI = "GV"
-COL_YOUTUBE_PUNJABI = "GW"
+COL_DRIVE_HINGLISH = ("drive links", "hinglish")
+COL_DRIVE_HINDI = ("drive links", "hindi")
+COL_DRIVE_MARATHI = ("drive links", "marathi")
+COL_DRIVE_PUNJABI = ("drive links", "punjabi")
+COL_DRIVE_TELUGU = ("drive links", "telugu")
 
-COL_PLIO_HINGLISH = "GX"
-COL_PLIO_HINDI = "GY"
-COL_PLIO_MARATHI = "GZ"
-COL_PLIO_PUNJABI = "HA"
+COL_YOUTUBE_HINGLISH = ("youtube links", "hinglish")
+COL_YOUTUBE_HINDI = ("youtube links", "hindi")
+COL_YOUTUBE_MARATHI = ("youtube links", "marathi")
+COL_YOUTUBE_PUNJABI = ("youtube links", "punjabi")
+COL_YOUTUBE_TELUGU = ("youtube links", "telugu")
 
-COL_CANVA_HINGLISH = "HB"
-COL_CANVA_HINDI = "HC"
-COL_CANVA_MARATHI = "HD"
-COL_CANVA_PUNJABI = "HE"
+COL_PLIO_HINGLISH = ("plio links", "hinglish")
+COL_PLIO_HINDI = ("plio links", "hindi")
+COL_PLIO_MARATHI = ("plio links", "marathi")
+COL_PLIO_PUNJABI = ("plio links", "punjabi")
+COL_PLIO_TELUGU = ("plio links", "telugu")
 
-COL_VIDEO_DESCRIPTION_ENGLISH = "HF"
-COL_VIDEO_DESCRIPTION_HINDI = "HG"
-COL_VIDEO_DESCRIPTION_MARATHI = "HH"
-COL_VIDEO_DESCRIPTION_PUNJABI = "HI"
-COL_ASSIGNMENT_SUBMISSION_GUIDELINES = "HK"
+COL_CANVA_HINGLISH = ("canva links", "hinglish")
+COL_CANVA_HINDI = ("canva links", "hindi")
+COL_CANVA_MARATHI = ("canva links", "marathi")
+COL_CANVA_PUNJABI = ("canva links", "punjabi")
+COL_CANVA_TELUGU = ("canva links", "telugu")
+
+COL_VIDEO_DESCRIPTION_ENGLISH = ("activity description", "english")
+COL_VIDEO_DESCRIPTION_HINDI = ("activity description", "hindi")
+COL_VIDEO_DESCRIPTION_MARATHI = ("activity description", "marathi")
+COL_VIDEO_DESCRIPTION_PUNJABI = ("activity description", "punjabi")
+COL_VIDEO_DESCRIPTION_TELUGU = ("activity description", "telugu")
+# Headed "Valid/Invalid", "Valid/ Invalid" or "Valid Submission ..." depending on the sheet.
+COL_ASSIGNMENT_SUBMISSION_GUIDELINES = ("", "valid")
 HK_EMPTY_SKIP_OUTPUT = "Skipped: Valid/Invalid not found"
 
-ACTIVITY_READ_END_COL = "HY"
-EXTERNAL_QUIZ_READ_END_COL = "GR"
+ACTIVITY_COLUMNS = (
+    COL_UNIT_ACTIVITY,
+    COL_ACTIVITY_TYPE,
+    COL_ACTIVITY_NAME,
+    COL_DESCRIPTION,
+    COL_HINDI_SCRIPT,
+    COL_MARATHI_SCRIPT,
+    COL_PUNJABI_SCRIPT,
+    COL_MAIN_QUIZ_START,
+    COL_MAIN_QUIZ_END,
+    COL_DRIVE_HINGLISH,
+    COL_DRIVE_HINDI,
+    COL_DRIVE_MARATHI,
+    COL_DRIVE_PUNJABI,
+    COL_YOUTUBE_HINGLISH,
+    COL_YOUTUBE_HINDI,
+    COL_YOUTUBE_MARATHI,
+    COL_YOUTUBE_PUNJABI,
+    COL_PLIO_HINGLISH,
+    COL_PLIO_HINDI,
+    COL_PLIO_MARATHI,
+    COL_PLIO_PUNJABI,
+    COL_CANVA_HINGLISH,
+    COL_CANVA_HINDI,
+    COL_CANVA_MARATHI,
+    COL_CANVA_PUNJABI,
+    COL_VIDEO_DESCRIPTION_ENGLISH,
+    COL_VIDEO_DESCRIPTION_HINDI,
+    COL_VIDEO_DESCRIPTION_MARATHI,
+    COL_VIDEO_DESCRIPTION_PUNJABI,
+    COL_ASSIGNMENT_SUBMISSION_GUIDELINES,
+)
+# Only some sheets have Telugu columns; a missing one reads as an empty cell.
+OPTIONAL_ACTIVITY_COLUMNS = (
+    COL_DRIVE_TELUGU,
+    COL_YOUTUBE_TELUGU,
+    COL_PLIO_TELUGU,
+    COL_CANVA_TELUGU,
+    COL_VIDEO_DESCRIPTION_TELUGU,
+)
 
 
 @dataclass
@@ -162,17 +214,21 @@ class ActivityRow:
     row_number: int
     row: list[Cell]
     headers: list[list[Cell]]
+    columns: dict[tuple[str, str], int]
     week_no: int
     skip_reason: str = ""
     filter_order: int = 0
 
+    def cell(self, column: tuple[str, str]) -> Cell:
+        return self.row[self.columns[column]] if column in self.columns else Cell()
+
     @property
     def unit_activity(self) -> str:
-        return clean(self.row[col_to_index(COL_UNIT_ACTIVITY)].text)
+        return clean(self.cell(COL_UNIT_ACTIVITY).text)
 
     @property
     def activity_name(self) -> str:
-        return clean(self.row[col_to_index(COL_ACTIVITY_NAME)].text)
+        return clean(self.cell(COL_ACTIVITY_NAME).text)
 
 
 @dataclass
@@ -542,6 +598,27 @@ def find_header_index(header: list[Cell], keywords: tuple[str, ...], fallback_co
     return col_to_index(fallback_column)
 
 
+def resolve_activity_columns(headers: list[list[Cell]], sheet_name: str) -> dict[tuple[str, str], int]:
+    sections = fill_merged_header_sections(headers[0])
+    labels = [normalize(cell.text) for cell in headers[1]]
+    columns = {}
+    for section, header in ACTIVITY_COLUMNS + OPTIONAL_ACTIVITY_COLUMNS:
+        index = next(
+            (
+                index
+                for index, label in enumerate(labels)
+                if header in label and section in ("", sections[index])
+            ),
+            None,
+        )
+        if index is not None:
+            columns[(section, header)] = index
+        elif (section, header) in ACTIVITY_COLUMNS:
+            under = f" under {section!r}" if section else ""
+            raise RuntimeError(f"Activity sheet {sheet_name!r} has no {header!r} column{under}")
+    return columns
+
+
 def read_activity_rows(ctx: ImportContext, entry: MasterEntry) -> list[ActivityRow]:
     ref = parse_sheet_ref(entry.sheet_url)
     metadata = ctx.sheets.get_metadata(ref.spreadsheet_id)
@@ -549,19 +626,21 @@ def read_activity_rows(ctx: ImportContext, entry: MasterEntry) -> list[ActivityR
     gid = None if entry.sheet_name else ref.gid
     sheet_name = resolve_sheet_name(metadata, gid, preferred_sheet_name)
     row_count = sheet_row_count(metadata, sheet_name)
-    rows = ctx.sheets.get_grid(ref.spreadsheet_id, sheet_name, f"A1:{ACTIVITY_READ_END_COL}{row_count}")
+    end_col = index_to_col(sheet_column_count(metadata, sheet_name) - 1)
+    rows = ctx.sheets.get_grid(ref.spreadsheet_id, sheet_name, f"A1:{end_col}{row_count}")
+    columns = resolve_activity_columns(rows[:2], sheet_name)
 
     activities = []
     activities_by_unit: dict[str, ActivityRow] = {}
     for row_index, row in enumerate(rows[2:], start=3):
-        unit_activity = clean(row[col_to_index(COL_UNIT_ACTIVITY)].text)
-        activity_name = clean(row[col_to_index(COL_ACTIVITY_NAME)].text)
+        unit_activity = clean(row[columns[COL_UNIT_ACTIVITY]].text)
+        activity_name = clean(row[columns[COL_ACTIVITY_NAME]].text)
         if not unit_activity or not activity_name:
             continue
         matched, filter_order = match_unit_filter(ctx.config, unit_activity)
         if not matched:
             continue
-        submission_guidelines = clean(row[col_to_index(COL_ASSIGNMENT_SUBMISSION_GUIDELINES)].text)
+        submission_guidelines = clean(row[columns[COL_ASSIGNMENT_SUBMISSION_GUIDELINES]].text)
         activity = ActivityRow(
             entry,
             ref.spreadsheet_id,
@@ -569,6 +648,7 @@ def read_activity_rows(ctx: ImportContext, entry: MasterEntry) -> list[ActivityR
             row_index,
             row,
             rows[:2],
+            columns,
             0,
             HK_EMPTY_SKIP_OUTPUT if is_blankish(submission_guidelines) else "",
             filter_order,
@@ -762,23 +842,22 @@ def create_assignment(
     course_vertical: str,
     existing_name: str,
 ) -> tuple[str, str]:
-    row = activity.row
     difficulty_tier = ctx.config.difficulty_tier
-    activity_type = clean(row[col_to_index(COL_ACTIVITY_TYPE)].text)
+    activity_type = clean(activity.cell(COL_ACTIVITY_TYPE).text)
     assignment_name = f"{activity.activity_name} Assignment"
 
     payload = {
         "name": make_doc_name("ASN", assignment_name),
         "assignment_name": assignment_name,
-        "description": clean(row[col_to_index(COL_DESCRIPTION)].text),
+        "description": clean(activity.cell(COL_DESCRIPTION).text),
         "vertical": course_vertical,
         "level": activity.master.level,
         "program": ctx.config.course_level_program,
-        "submission_guidelines": clean(row[col_to_index(COL_ASSIGNMENT_SUBMISSION_GUIDELINES)].text),
+        "submission_guidelines": clean(activity.cell(COL_ASSIGNMENT_SUBMISSION_GUIDELINES).text),
         "difficulty_tier": difficulty_tier,
         "assignment_type": map_assignment_activity_type(activity_type),
-        "assignment_translations": build_assignment_translations(row, assignment_name),
-        "submission_media_links": build_submission_media_links(row),
+        "assignment_translations": build_assignment_translations(activity, assignment_name),
+        "submission_media_links": build_submission_media_links(activity),
     }
     if ctx.config.force_create:
         payload.pop("name")
@@ -800,21 +879,20 @@ def create_video_class(
     existing_name: str,
     update_existing: bool,
 ) -> tuple[str, str]:
-    row = activity.row
     difficulty_tier = ctx.config.difficulty_tier
     video_name = activity.activity_name
 
     payload = {
         "name": make_doc_name("VC", video_name),
         "video_name": video_name,
-        "description": clean(row[col_to_index(COL_VIDEO_DESCRIPTION_ENGLISH)].text),
+        "description": clean(activity.cell(COL_VIDEO_DESCRIPTION_ENGLISH).text),
         "duration": "00:00:00",
-        "video_youtube_url": cell_url(row[col_to_index(COL_YOUTUBE_HINGLISH)]),
-        "video_plio_url": cell_url(row[col_to_index(COL_PLIO_HINGLISH)]),
+        "video_youtube_url": cell_url(activity.cell(COL_YOUTUBE_HINGLISH)),
+        "video_plio_url": cell_url(activity.cell(COL_PLIO_HINGLISH)),
         "completion_threshold": DEFAULT_VIDEO_COMPLETION_THRESHOLD,
         "difficulty_tier": difficulty_tier,
         "course_vertical": course_vertical,
-        "video_translations": build_video_translations(row),
+        "video_translations": build_video_translations(activity),
         "assessments": [
             {
                 "doctype": "AssessmentList",
@@ -843,7 +921,6 @@ def create_quiz(
     existing_name: str,
     existing_questions: dict[int, str],
 ) -> tuple[str, dict[str, int]]:
-    row = activity.row
     difficulty_tier = ctx.config.difficulty_tier
     quiz_name = f"{activity.activity_name} Quiz"
     counts = {"created": 0, "updated": 0, "skipped": 0}
@@ -871,7 +948,7 @@ def create_quiz(
     payload = {
         "name": make_doc_name("QZ", quiz_name),
         "quiz_name": quiz_name,
-        "description": clean(row[col_to_index(COL_DESCRIPTION)].text),
+        "description": clean(activity.cell(COL_DESCRIPTION).text),
         "quiz_type": "Main",
         "questions": question_links,
         "passing_score": DEFAULT_QUIZ_PASSING_SCORE,
@@ -1004,11 +1081,10 @@ def create_learning_unit(
     existing_name: str,
     update_existing: bool,
 ) -> tuple[str, str]:
-    row = activity.row
     difficulty_tier = ctx.config.difficulty_tier
     activity_name = activity.activity_name
     unit_activity = activity.unit_activity
-    activity_type = clean(row[col_to_index(COL_ACTIVITY_TYPE)].text)
+    activity_type = clean(activity.cell(COL_ACTIVITY_TYPE).text)
 
     content_items = [
         {
@@ -1032,7 +1108,7 @@ def create_learning_unit(
     payload = {
         "name": make_doc_name("LU", f"{course_level_for_name} {unit_activity}"),
         "unit_name": activity_name,
-        "description": clean(row[col_to_index(COL_DESCRIPTION)].text),
+        "description": clean(activity.cell(COL_DESCRIPTION).text),
         "order": activity.row_number,
         "unit_type": "Lesson",
         "difficulty_tier": difficulty_tier,
@@ -1065,21 +1141,20 @@ def learning_unit_filters(activity: ActivityRow, difficulty_tier: str) -> list[l
 
 
 def parse_activity_quiz(ctx: ImportContext, activity: ActivityRow) -> list[QuizQuestionData]:
-    row = activity.row
-    linked_quiz = find_external_quiz_link(row)
+    linked_quiz = find_external_quiz_link(activity)
     if linked_quiz:
         link_url, referenced_rows = linked_quiz
         return parse_external_quiz_sheet(ctx.sheets, link_url, referenced_rows, activity.spreadsheet_id)
 
-    return parse_structured_quiz_questions(activity.headers[0], activity.headers[1], row)
+    return parse_structured_quiz_questions(activity.headers[0], activity.headers[1], activity.row)
 
 
-def find_external_quiz_link(row: list[Cell]) -> tuple[str, list[int]] | None:
-    start = col_to_index(MAIN_QUIZ_START_COL)
-    end = col_to_index(MAIN_QUIZ_END_COL)
+def find_external_quiz_link(activity: ActivityRow) -> tuple[str, list[int]] | None:
+    start = activity.columns[COL_MAIN_QUIZ_START]
+    end = activity.columns[COL_MAIN_QUIZ_END]
     link_url = ""
     notes = []
-    for cell in row[start : end + 1]:
+    for cell in activity.row[start:end]:
         text = clean(cell.text)
         if link_url and normalize(text) == "link" and cell.hyperlink:
             break
@@ -1102,7 +1177,8 @@ def parse_external_quiz_sheet(
     metadata = sheets.get_metadata(ref.spreadsheet_id)
     sheet_name = resolve_sheet_name(metadata, ref.gid, "")
     row_count = sheet_row_count(metadata, sheet_name)
-    rows = sheets.get_grid(ref.spreadsheet_id, sheet_name, f"A1:{EXTERNAL_QUIZ_READ_END_COL}{row_count}")
+    end_col = index_to_col(sheet_column_count(metadata, sheet_name) - 1)
+    rows = sheets.get_grid(ref.spreadsheet_id, sheet_name, f"A1:{end_col}{row_count}")
 
     if len(rows) < 3:
         return []
@@ -1214,7 +1290,7 @@ def is_valid_question_block(block: dict[str, Any]) -> bool:
     )
 
 
-def build_video_translations(row: list[Cell]) -> list[dict[str, Any]]:
+def build_video_translations(activity: ActivityRow) -> list[dict[str, Any]]:
     configs = {
         "English": {
             "description": COL_VIDEO_DESCRIPTION_ENGLISH,
@@ -1236,14 +1312,19 @@ def build_video_translations(row: list[Cell]) -> list[dict[str, Any]]:
             "youtube": COL_YOUTUBE_PUNJABI,
             "plio": COL_PLIO_PUNJABI,
         },
+        "Telugu": {
+            "description": COL_VIDEO_DESCRIPTION_TELUGU,
+            "youtube": COL_YOUTUBE_TELUGU,
+            "plio": COL_PLIO_TELUGU,
+        },
     }
     translations = []
     for language, config in configs.items():
         if language == "English" and not CREATE_DEFAULT_LANGUAGE_VIDEO_TRANSLATION:
             continue
-        translated_description = clean(row[col_to_index(config["description"])].text)
-        youtube_url = cell_url(row[col_to_index(config["youtube"])])
-        plio_url = cell_url(row[col_to_index(config["plio"])])
+        translated_description = clean(activity.cell(config["description"]).text)
+        youtube_url = cell_url(activity.cell(config["youtube"]))
+        plio_url = cell_url(activity.cell(config["plio"]))
         if not translated_description and not youtube_url and not plio_url:
             continue
         translations.append(
@@ -1258,7 +1339,7 @@ def build_video_translations(row: list[Cell]) -> list[dict[str, Any]]:
     return translations
 
 
-def build_assignment_translations(row: list[Cell], assignment_name: str) -> list[dict[str, str]]:
+def build_assignment_translations(activity: ActivityRow, assignment_name: str) -> list[dict[str, str]]:
     configs = {
         "Hindi": COL_HINDI_SCRIPT,
         "Marathi": COL_MARATHI_SCRIPT,
@@ -1266,7 +1347,7 @@ def build_assignment_translations(row: list[Cell], assignment_name: str) -> list
     }
     translations = []
     for language, column in configs.items():
-        translated_guidelines = clean(row[col_to_index(column)].text)
+        translated_guidelines = clean(activity.cell(column).text)
         if is_blankish(translated_guidelines):
             continue
         translations.append(
@@ -1280,24 +1361,27 @@ def build_assignment_translations(row: list[Cell], assignment_name: str) -> list
     return translations
 
 
-def build_submission_media_links(row: list[Cell]) -> list[dict[str, str]]:
+def build_submission_media_links(activity: ActivityRow) -> list[dict[str, str]]:
     links = []
     configs = [
         ("Drive", "English", COL_DRIVE_HINGLISH),
         ("Drive", "Hindi", COL_DRIVE_HINDI),
         ("Drive", "Marathi", COL_DRIVE_MARATHI),
         ("Drive", "Punjabi", COL_DRIVE_PUNJABI),
+        ("Drive", "Telugu", COL_DRIVE_TELUGU),
         ("YouTube", "English", COL_YOUTUBE_HINGLISH),
         ("YouTube", "Hindi", COL_YOUTUBE_HINDI),
         ("YouTube", "Marathi", COL_YOUTUBE_MARATHI),
         ("YouTube", "Punjabi", COL_YOUTUBE_PUNJABI),
+        ("YouTube", "Telugu", COL_YOUTUBE_TELUGU),
         ("Canva", "English", COL_CANVA_HINGLISH),
         ("Canva", "Hindi", COL_CANVA_HINDI),
         ("Canva", "Marathi", COL_CANVA_MARATHI),
         ("Canva", "Punjabi", COL_CANVA_PUNJABI),
+        ("Canva", "Telugu", COL_CANVA_TELUGU),
     ]
     for link_type, language, column in configs:
-        url = strip_url_tracking_parameters(cell_url(row[col_to_index(column)]))
+        url = strip_url_tracking_parameters(cell_url(activity.cell(column)))
         if not url:
             continue
         links.append(
@@ -1426,7 +1510,7 @@ def fill_merged_header_sections(header: list[Cell]) -> list[str]:
     for cell in header:
         text = normalize(cell.text)
         if text:
-            current = text
+            current = SECTION_ALIASES.get(text, text)
         sections.append(current)
     return sections
 
