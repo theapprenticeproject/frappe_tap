@@ -58,6 +58,8 @@ SCHOOL_STATE_LANGUAGE_MAP = {
     "PUNJAB": "Punjabi",
     "UTTAR PRADESH": "Hindi",
     "DELHI": "Hinglish",
+    "TELANGANA": "Telugu",
+    "UTTARAKHAND": "Hindi",
 }
 
 SCHOOL_FLOW_REGISTRATION_CITIES = { }
