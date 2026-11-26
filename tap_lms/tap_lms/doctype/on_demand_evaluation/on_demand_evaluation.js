@@ -25,6 +25,21 @@ frappe.ui.form.on("On Demand Evaluation", {
                 },
             });
         });
+        frm.add_custom_button(__("Fill Rubrics"), async () => {
+            if (frm.is_dirty()) {
+                await frm.save();
+            }
+            frappe.call({
+                method: `${METHOD}.fill_rubrics`,
+                args: { docname: frm.doc.name },
+                freeze: true,
+                freeze_message: __("Filling rubrics..."),
+                callback() {
+                    frm.reload_doc();
+                    frappe.show_alert({ message: __("Rubrics filled. Check Rubric Sheets for errors."), indicator: "blue" });
+                },
+            });
+        });
         frm.add_custom_button(__("Queue Evaluations"), () => {
             frappe.call({
                 method: `${METHOD}.queue_evaluations`,

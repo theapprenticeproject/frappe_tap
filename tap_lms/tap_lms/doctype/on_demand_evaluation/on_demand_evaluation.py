@@ -3,12 +3,13 @@
 
 import re
 from io import BytesIO
+from itertools import cycle
 
 import frappe
 from frappe.model.document import Document
 from frappe.utils import now_datetime
 from openpyxl import Workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.workbook.properties import CalcProperties
 from openpyxl.worksheet.datavalidation import DataValidation
@@ -18,7 +19,7 @@ from tap_lms.utils.google_drive_helper import (
 	get_google_service_account_info,
 	upload_bytes_to_google_drive,
 )
-from tap_lms.utils.google_sheet_helper import GoogleSheetsClient
+from tap_lms.utils.google_sheet_helper import GoogleSheetsClient, parse_sheet_ref
 from tap_lms.utils.scheduled_jobs import get_job_config
 
 # Built by scripts/private/list_prod_learning_unit_names_to_google_sheet.py:
@@ -27,6 +28,8 @@ SHEETS_URL = "https://sheets.googleapis.com/v4/spreadsheets/1nSN72ikEqM7U0gMl-3A
 ON_DEMAND_EVALUATION_DRIVE_FOLDER_ID = "13Rk38NrjFonIQ3BmpOrIC-rNItbo1wQU"
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 ILLEGAL_XLSX_CHARACTERS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+RUBRIC_GRADES = {"Invalid": -1, "Novice": 1, "Beginner": 2, "Emerging": 3, "Proficient": 4, "Expert": 5}
+LEVEL_RE = re.compile(r"\b(?:level|l)\s*(\d+[a-z]{0,2})\b", re.I)
 
 
 class OnDemandEvaluation(Document):
@@ -139,10 +142,84 @@ def _get_assignment_ids(doc):
 
 	# Leave the Assignment link blank for IDs missing in Frappe so they stand out.
 	existing = set(frappe.get_all("Assignment", filters={"name": ["in", assignment_ids]}, pluck="name"))
+	with_rubrics = set(frappe.get_all(
+		"Rubric Grade", filters={"parenttype": "Assignment", "parent": ["in", assignment_ids]}, pluck="parent",
+	))
 	for row in doc.assignments:
 		if row.assignment_name in existing:
 			row.assignment = row.assignment_name
+		row.rubric_present = row.assignment_name in with_rubrics
 	return assignment_ids
+
+
+@frappe.whitelist()
+def fill_rubrics(docname):
+	"""Fill Assessment Rubrics on the job's assignments from each vertical's rubric sheet (one tab per level)."""
+	doc = frappe.get_doc("On Demand Evaluation", docname)
+	if not doc.rubric_sheets:
+		frappe.throw("Add a rubric sheet for at least one vertical.")
+	_get_assignment_ids(doc)
+	sheets = GoogleSheetsClient(get_google_service_account_info())
+	for sheet in doc.rubric_sheets:
+		errors = []
+		try:
+			spreadsheet_id = parse_sheet_ref(sheet.sheet_url).spreadsheet_id
+			titles = sheets.get_tab_titles(spreadsheet_id)
+			for row in doc.assignments:
+				if row.vertical != sheet.vertical or not row.assignment:
+					continue
+				try:
+					assignment = frappe.get_doc("Assignment", row.assignment)
+					if assignment.rubric_grades and not doc.replace_existing_rubrics:
+						continue
+					tabs = [title for title in titles if _tab_level(title) == row.level]
+					if len(tabs) != 1:
+						raise ValueError(f"expected 1 tab for {row.level} but found {len(tabs)}: {tabs}")
+					assignment.set("rubric_grades", _parse_rubrics(sheets.get_values(spreadsheet_id, tabs[0])))
+					assignment.save()
+					row.rubric_present = 1
+				except Exception as e:
+					errors.append(f"{row.assignment}: {e}")
+		except Exception as e:
+			errors.append(str(e))
+		sheet.error = "\n".join(errors)
+	doc.save()
+
+
+def _tab_level(title):
+	match = LEVEL_RE.search(title)
+	return f"Level {match.group(1).upper()}" if match else None
+
+
+def _parse_rubrics(values):
+	"""Rows of a rubric tab -> Rubric Grade rows. The header row holds the grade names and an optional Criteria column."""
+	header_idx = next(
+		(i for i, row in enumerate(values) if {c.strip().lower() for c in row} & {g.lower() for g in RUBRIC_GRADES}),
+		None,
+	)
+	if header_idx is None:
+		raise ValueError(f"no header row containing grade names {list(RUBRIC_GRADES)}")
+	header = [c.strip().lower() for c in values[header_idx]]
+	missing = [g for g in RUBRIC_GRADES if g.lower() not in header]
+	if missing:
+		raise ValueError(f"header row is missing grade columns {missing}")
+	criteria_col = header.index("criteria") if "criteria" in header else 0
+
+	rubrics = []
+	for row in values[header_idx + 1 :]:
+		row = [c.strip() for c in row] + [""] * (len(header) - len(row))
+		if not row[criteria_col]:
+			continue
+		for grade, value in RUBRIC_GRADES.items():
+			description = row[header.index(grade.lower())]
+			if description:
+				rubrics.append({
+					"skill_name": row[criteria_col],
+					"grade_name": grade,
+					"grade_value": value,
+					"grade_description": description,
+				})
+	return rubrics
 
 
 def _normalize(value):
@@ -274,9 +351,11 @@ def _build_xlsx(job_name):
 	}
 	filters = []
 	bq_filters = []
-	for row, dimension in enumerate(("Vertical", "Level", "State"), 2):
+	for row, (dimension, color) in enumerate((("Vertical", "E06666"), ("Level", "B6D7A8"), ("State", "FFE599")), 2):
 		summary[f"E{row}"] = dimension
 		summary[f"F{row}"] = "All"
+		for col in "EF":
+			summary[f"{col}{row}"].fill = PatternFill("solid", fgColor=color)
 		selector = f"$F${row}"
 		filters.append(f'((({selector}="All")+({result_ranges[dimension]}={selector}))>0)')
 		bq_filters.append(f'((({selector}="All")+({bq_ranges[dimension]}={selector}))>0)')
@@ -322,9 +401,12 @@ def _build_xlsx(job_name):
 		cell.value for skill, _ in skill_pairs for cell in worksheet[columns[skill]][1:]
 		if cell.value and cell.value.strip()
 	})
-	for row, skill in zip(range(11, 11 + 5 * len(skills), 5), skills):
+	skill_colors = cycle(("D0E0E3", "9FC5E8", "6FA8DC", "A2C4C9", "B6D7A8"))
+	for row, skill, color in zip(range(11, 11 + 5 * len(skills), 5), skills, skill_colors):
 		for col, label in enumerate((skill, "Invalid", "Novice", "Beginner", "Emerging", "Proficient", "Expert"), 1):
-			summary.cell(row, col, label).font = Font(bold=True)
+			cell = summary.cell(row, col, label)
+			cell.font = Font(bold=True)
+			cell.fill = PatternFill("solid", fgColor=color)
 		summary.cell(row + 1, 1, "Absolutes")
 		summary.cell(row + 2, 1, "Percentage")
 		for col, grade in enumerate((-1, 1, 2, 3, 4, 5), 2):

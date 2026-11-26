@@ -9,6 +9,9 @@
   "unit_activity_no",
   "verticals",
   "test_limit",
+  "rubrics_section",
+  "replace_existing_rubrics",
+  "rubric_sheets",
   "status_section",
   "status",
   "total_assignments",
@@ -51,6 +54,24 @@
    "fieldtype": "Table",
    "label": "Verticals",
    "options": "On Demand Evaluation Vertical"
+  },
+  {
+   "fieldname": "rubrics_section",
+   "fieldtype": "Section Break",
+   "label": "Rubrics"
+  },
+  {
+   "default": "0",
+   "description": "Unchecked: skip assignments that already have Assessment Rubrics.",
+   "fieldname": "replace_existing_rubrics",
+   "fieldtype": "Check",
+   "label": "Replace Existing Rubrics"
+  },
+  {
+   "fieldname": "rubric_sheets",
+   "fieldtype": "Table",
+   "label": "Rubric Sheets",
+   "options": "On Demand Evaluation Rubric Sheet"
   },
   {
    "fieldname": "status_section",

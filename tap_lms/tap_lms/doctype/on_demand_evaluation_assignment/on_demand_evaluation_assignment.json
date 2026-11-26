@@ -8,7 +8,8 @@
   "assignment",
   "level",
   "vertical",
-  "program"
+  "program",
+  "rubric_present"
  ],
  "fields": [
   {
@@ -46,6 +47,14 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Program",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "rubric_present",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Rubric Present",
    "read_only": 1
   }
  ],
