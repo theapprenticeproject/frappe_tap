@@ -16,7 +16,13 @@ from tap_lms.utils.scheduled_jobs import get_job_config
 
 SCHEDULED_JOB_NAME = "teacher_reporting.run_weekly_extract"
 
-LOCK_STALE_MINUTES = 10
+# NOTE: bumped from 10 -> 100. run_weekly_extract now legitimately runs for
+# ~1.3 hours (78 minutes) on the "long" queue (see the dispatch block in
+# run_weekly_extract below). At 10 minutes, _run_in_progress() would have
+# incorrectly treated a still-running job as abandoned/stale and allowed a
+# second concurrent run to start. 100 minutes comfortably covers the real
+# runtime with margin while still catching genuinely stuck runs.
+LOCK_STALE_MINUTES = 100
 STUDENT_CHUNK_SIZE = 5000
 SCHOOL_CHUNK_SIZE = 5000
 DISTRICT_CHUNK_SIZE = 5000
@@ -587,7 +593,35 @@ def _iter_batches(items, batch_size):
         yield items[i:i + batch_size]
 
 
-def run_weekly_extract():
+def run_weekly_extract(_dispatched=False):
+    # --- SAFE-DISPATCH BLOCK (added) -----------------------------------
+    # Root cause: Frappe's scheduler enqueues "Cron"-frequency jobs onto the
+    # "default" RQ queue, which has a hard 300-second timeout (confirmed via
+    # ScheduledJobType.get_queue_name(): it only returns "long" when "Long"
+    # is in self.frequency, and "Cron" never matches). This job's real
+    # runtime is ~1.3 hours, so it was being silently SIGKILL'd by RQ partway
+    # through batch rendering, with no exception and nothing logged.
+    #
+    # Fix: when called the normal way (by cron, with no arguments), this
+    # function does nothing except re-enqueue itself onto the "long" queue
+    # with an explicit, generous timeout, then returns immediately -- well
+    # within the 300s budget of the call that triggered it. The re-enqueued
+    # call passes _dispatched=True, which skips this block and falls
+    # through to the real logic below, completely unchanged.
+    #
+    # Function name, signature call shape (zero-arg calls still work),
+    # and hooks.py's cron entry are all unaffected.
+    if not _dispatched:
+        frappe.enqueue(
+            "tap_lms.teacher_bot.teacher_reporting.run_weekly_extract",
+            queue="long",
+            timeout=7200,  # 2 hours: ~1.5x margin over the observed ~1.3hr runtime
+            job_name="teacher_reporting_weekly_extract",
+            _dispatched=True,
+        )
+        return {"status": "dispatched"}
+    # --- END SAFE-DISPATCH BLOCK ----------------------------------------
+
     run_started = now_datetime()
     settings = get_reporting_settings()
     if not settings.enabled:

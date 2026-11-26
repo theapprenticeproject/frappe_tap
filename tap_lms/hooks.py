@@ -29,16 +29,16 @@ scheduler_events = {
         # school and uploads it to GCS. Every Monday at 3 am IST (Frappe system
         # timezone). Exits immediately unless enabled in Custom Scheduled Jobs.
         # Independent of the image-sync job above and of Teacher Bot.
-        # TEMPORARILY DISABLED for testing — moved to Wednesday 3am IST below.
-        # Re-enable this and remove/comment out the Wednesday line once testing
+        # TEMPORARILY DISABLED for testing — moved to Thursday 3am IST below.
+        # Re-enable this and remove/comment out the Thursday line once testing
         # is done.
         # "0 3 * * 1": [
         #     "tap_lms.teacher_bot.teacher_reporting.run_weekly_extract",
         # ],
-        # TEMP TEST TRIGGER: Wednesday 3 am IST, same time as the normal Monday
-        # run, just moved one weekday later for testing. Remove this block and
+        # TEMP TEST TRIGGER: Thursday 3 am IST, same time as the normal Monday
+        # run, just moved to a later weekday for testing. Remove this block and
         # re-enable the Monday trigger above once testing is complete.
-        "0 3 * * 3": [
+        "0 3 * * 4": [
             "tap_lms.teacher_bot.teacher_reporting.run_weekly_extract",
         ],
         # Student feedback delivery (Glific feedback flow), three times a day.
