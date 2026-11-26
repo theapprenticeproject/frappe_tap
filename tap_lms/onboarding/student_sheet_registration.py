@@ -18,7 +18,6 @@ from tap_lms.onboarding.backend_upload_utils import (
     GLIFIC_CONTACTS_FOLDER,
 )
 from tap_lms.onboarding.glific_contact_upload import (
-    get_glific_collection as _get_glific_collection,
     move_contacts_and_wait as _move_contacts_and_wait,
 )
 from tap_lms.tap_lms.doctype.student.student import (
@@ -26,7 +25,7 @@ from tap_lms.tap_lms.doctype.student.student import (
     _reserve_next_student_name,
     student_in_blocked_batch,
 )
-from tap_lms.utils.google_sheet_helper import GoogleSheetsClient
+from tap_lms.utils.google_sheet_helper import GoogleSheetsClient, parse_sheet_ref
 from tap_lms.utils.google_drive_helper import (
     GCP_CREDENTIALS_PROJECT_ID,
     ensure_google_drive_folder as _ensure_google_drive_folder,
@@ -35,41 +34,7 @@ from tap_lms.utils.google_drive_helper import (
 )
 
 
-COURSE_SOURCE_SPREADSHEET_ID = "1rtaPJ23KcKfSbt6VY_Lu0HwgAOWwnzOHv5mup7wE3TU"
 STUDENT_SHEET_REGISTRATION_DRIVE_FOLDER_ID = "11HUrdZ4puxjF8fRFWyXuWFNhPbEZfg6V"
-
-FIXED_STUDENT_REGISTRATION_SHEETS = [
-    {
-        "language": "English",
-        "spreadsheet_id": "1bePUEi1KaXJfRB4O4KggkaIxDH9l7OpMZPBD9pBTgcg",
-        "sheet_id": 0,
-    },
-    {
-        "language": "Hinglish",
-        "spreadsheet_id": "1GY3-zhGzAFHbjHy65FyrLh1EyAdoNNifsJPB4RwE9YE",
-        "sheet_id": 0,
-    },
-    {
-        "language": "Hindi",
-        "spreadsheet_id": "1sJ-FsyNcI5yeyXeAVhFpNGJepNPWJ2gBTC6BYOkilr8",
-        "sheet_id": 0,
-    },
-    {
-        "language": "Punjabi",
-        "spreadsheet_id": "13bx8lXNT_0yi4cKbywOiVxiyUufoUujZmpbF4adSUCs",
-        "sheet_id": 0,
-    },
-    {
-        "language": "Marathi",
-        "spreadsheet_id": "1QH7Hi7tqe8c-ABAD5spIfA4dXJjxuOhzukua5nQP98c",
-        "sheet_id": 0,
-    },
-    {
-        "language": "Hindi",
-        "spreadsheet_id": COURSE_SOURCE_SPREADSHEET_ID,
-        "sheet_id": 0,
-    },
-]
 
 SOURCE_COLUMNS = {
     "timestamp": "timestamp",
@@ -122,6 +87,7 @@ PREPARED_HEADERS = [
 @dataclass(frozen=True)
 class SourceSheet:
     language: str
+    has_course_column: bool
     spreadsheet_id: str
     sheet_id: int
     spreadsheet_title: str
@@ -340,7 +306,7 @@ def _prepare_source_row(
         "shall_we_begin": source_row.get("shall_we_begin") or "",
         "course": (
             str(source_row.get("course") or "").strip()
-            if sheet.spreadsheet_id == COURSE_SOURCE_SPREADSHEET_ID else ""
+            if sheet.has_course_column else ""
         ),
     }
 
@@ -392,7 +358,7 @@ def _prepare_source_row(
     base["batch"] = batch
     base["model_id"] = str(getattr(school_enrollment, "model", None) or "").strip()
 
-    if sheet.spreadsheet_id == COURSE_SOURCE_SPREADSHEET_ID:
+    if sheet.has_course_column:
         course = base["course"]
         if not course:
             return _prepared_error(base, "Missing course")
@@ -516,32 +482,37 @@ def _find_existing_student(phone: str, student_name: str) -> str | None:
 
 
 def _read_all_source_sheets(sheets_client: GoogleSheetsClient, ensure_status_column: bool) -> list[SourceSheet]:
-    sheets = []
-    for config in FIXED_STUDENT_REGISTRATION_SHEETS:
-        sheets.append(_read_source_sheet(sheets_client, config, ensure_status_column=ensure_status_column))
-    return sheets
+    sources = frappe.get_all(
+        "Student Sheet Registration Source",
+        filters={"active": 1},
+        fields=["language", "spreadsheet_url", "has_course_column"],
+        order_by="creation asc",
+    )
+    return [
+        _read_source_sheet(sheets_client, source, ensure_status_column=ensure_status_column)
+        for source in sources
+    ]
 
 
-def _read_source_sheet(sheets_client: GoogleSheetsClient, config: dict, ensure_status_column: bool) -> SourceSheet:
-    metadata = sheets_client.get_metadata(config["spreadsheet_id"])
-    sheet_meta = _select_sheet_metadata(metadata, config["sheet_id"])
+def _read_source_sheet(sheets_client: GoogleSheetsClient, source: dict, ensure_status_column: bool) -> SourceSheet:
+    sheet_ref = parse_sheet_ref(source["spreadsheet_url"])
+    spreadsheet_id = sheet_ref.spreadsheet_id
+    metadata = sheets_client.get_metadata(spreadsheet_id)
+    sheet_meta = _select_sheet_metadata(metadata, sheet_ref.gid or 0)
     sheet_title = sheet_meta["title"]
-    values = sheets_client.get_values(config["spreadsheet_id"], sheet_title)
+    values = sheets_client.get_values(spreadsheet_id, sheet_title)
     if not values:
-        raise frappe.ValidationError(f"Sheet is empty: {config['spreadsheet_id']}")
+        raise frappe.ValidationError(f"Sheet is empty: {spreadsheet_id}")
 
     header = [str(value or "").strip() for value in values[0]]
-    header_map = _resolve_source_header_map(
-        header,
-        include_course=config["spreadsheet_id"] == COURSE_SOURCE_SPREADSHEET_ID,
-    )
+    header_map = _resolve_source_header_map(header, include_course=source["has_course_column"])
     status_column_index = _find_header_index(header, REGISTRATION_STATUS_COLUMN)
     if status_column_index is None:
         if not ensure_status_column:
             raise frappe.ValidationError("registration_status column is missing")
         status_column_index = len(header) + 1
         _write_status_updates(sheets_client, [{
-            "spreadsheet_id": config["spreadsheet_id"],
+            "spreadsheet_id": spreadsheet_id,
             "range": _cell_range(sheet_title, status_column_index, 1),
             "value": REGISTRATION_STATUS_COLUMN,
         }])
@@ -553,7 +524,7 @@ def _read_source_sheet(sheets_client: GoogleSheetsClient, config: dict, ensure_s
             raise frappe.ValidationError(f"{PROCESS_STATUS_COLUMN} column is missing")
         process_status_column_index = len(header) + 1
         _write_status_updates(sheets_client, [{
-            "spreadsheet_id": config["spreadsheet_id"],
+            "spreadsheet_id": spreadsheet_id,
             "range": _cell_range(sheet_title, process_status_column_index, 1),
             "value": PROCESS_STATUS_COLUMN,
         }])
@@ -573,8 +544,9 @@ def _read_source_sheet(sheets_client: GoogleSheetsClient, config: dict, ensure_s
         rows.append(row)
 
     return SourceSheet(
-        language=config["language"],
-        spreadsheet_id=config["spreadsheet_id"],
+        language=source["language"],
+        has_course_column=bool(source["has_course_column"]),
+        spreadsheet_id=spreadsheet_id,
         sheet_id=int(sheet_meta["sheetId"]),
         spreadsheet_title=metadata.get("properties", {}).get("title") or "",
         sheet_title=sheet_title,
@@ -1353,12 +1325,15 @@ def _glific_contact_row(row: dict) -> dict:
     state_id = frappe.db.get_value("School", school_id, "state") if school_id else ""
     state_name = frappe.db.get_value("State", state_id, "state_name") if state_id else ""
     model_name = _get_glific_model_name(school_id, batch, row.get("model_id") or "")
-    batch_id = frappe.db.get_value("Batch", batch, "batch_id") if batch else ""
+    batch_id, main_collection, collection_without_course = (
+        frappe.db.get_value("Batch", batch, ["batch_id", "main_collection", "collection_without_course"])
+        if batch else ("", "", "")
+    )
     course = (
         frappe.db.get_value("Course Verticals", course_vertical, "name2")
         if course_vertical else ""
     )
-    collection = _get_glific_collection(batch_id, course)
+    collection = main_collection if course else collection_without_course
     data = {
         "name": row.get("student_name") or "",
         "phone": row.get("phone") or "",
@@ -1371,10 +1346,7 @@ def _glific_contact_row(row: dict) -> dict:
         "batch_id": batch_id or "",
         "grade": row.get("grade") or "",
         "level": row.get("level") or "",
-        "course": (
-            row.get("course") or ""
-            if row.get("spreadsheet_id") == COURSE_SOURCE_SPREADSHEET_ID else ""
-        ),
+        "course": row.get("course") or "",
         "student_id": row.get("student_id") or "",
         "collection": collection,
     }

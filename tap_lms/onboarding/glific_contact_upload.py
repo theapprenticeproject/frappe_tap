@@ -18,21 +18,6 @@ GLIFIC_CONTACT_NOTIFICATION_POLL_INTERVAL_SECONDS = 120
 GLIFIC_CONTACT_NOTIFICATION_TIMEOUT_SECONDS = 1200
 GLIFIC_CONTACT_NOTIFICATION_QUERY_LIMIT = 50
 
-GLIFIC_COLLECTION_BY_BATCH_ID = {
-    "BT00000027": "TLM26_AllStudents_Batch MCD",
-    "BT00000026": "TLM26_AllStudents_Batch Moga_P",
-    "BT00000025": "TLM26_AllStudents_Batch2",
-    "BT00000024": "TLM26_AllStudents_Batch1",
-    "BT00000029": "TLM26_AllStudents_Batch UP",
-    "BT00000030": "TLM26_AllStudents_Batch3",
-    "BT00000031": "TLM26_AllStudents_BatchTelangana"
-}
-GLIFIC_COLLECTION_WITHOUT_COURSE_BY_BATCH_ID = {
-    "BT00000029": "CourseSelection_Batch_UP",
-    "BT00000030": "TLM26_AllStudents_Batch3_CourseSelection"
-}
-GLIFIC_COLLECTION_WITHOUT_COURSE = "TLM26_AllStudents_APS"
-
 MOVE_CONTACTS_MUTATION = """
 mutation MoveContacts($data: String!, $type: ImportContactsTypeEnum) {
   moveContacts(data: $data, type: $type) {
@@ -59,15 +44,6 @@ query Notifications($filter: NotificationFilter, $opts: Opts) {
   }
 }
 """
-
-
-def get_glific_collection(batch_id: str, course: str) -> str:
-    if str(course or "").strip():
-        return GLIFIC_COLLECTION_BY_BATCH_ID.get(str(batch_id or "").strip(), "")
-    return GLIFIC_COLLECTION_WITHOUT_COURSE_BY_BATCH_ID.get(
-        str(batch_id or "").strip(),
-        GLIFIC_COLLECTION_WITHOUT_COURSE,
-    )
 
 
 def move_contacts_and_wait(

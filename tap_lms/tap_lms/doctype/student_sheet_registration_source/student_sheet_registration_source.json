@@ -1,0 +1,77 @@
+{
+ "actions": [],
+ "allow_import": 1,
+ "autoname": "format:SSRS-{#####}",
+ "creation": "2026-11-26 00:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "spreadsheet_url",
+  "language",
+  "active",
+  "has_course_column"
+ ],
+ "fields": [
+  {
+   "description": "Google Sheets URL. The tab in the URL's gid is read, otherwise the first tab.",
+   "fieldname": "spreadsheet_url",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Spreadsheet URL",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "language",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Language",
+   "options": "TAP Language",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Active"
+  },
+  {
+   "default": "0",
+   "description": "Take the course from the sheet's course column instead of the school's batch enrollment",
+   "fieldname": "has_course_column",
+   "fieldtype": "Check",
+   "label": "Has Course Column"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-11-26 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Tap Lms",
+ "name": "Student Sheet Registration Source",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

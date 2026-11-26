@@ -1,0 +1,64 @@
+{
+ "actions": [],
+ "creation": "2026-11-26 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "assignment_name",
+  "assignment",
+  "level",
+  "vertical",
+  "program"
+ ],
+ "fields": [
+  {
+   "fieldname": "assignment_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Assignment Name",
+   "read_only": 1
+  },
+  {
+   "description": "Blank when the assignment in the sheet does not exist.",
+   "fieldname": "assignment",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Assignment",
+   "options": "Assignment",
+   "read_only": 1
+  },
+  {
+   "fieldname": "level",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Level",
+   "read_only": 1
+  },
+  {
+   "fieldname": "vertical",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Vertical",
+   "read_only": 1
+  },
+  {
+   "fieldname": "program",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Program",
+   "read_only": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-11-26 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Tap Lms",
+ "name": "On Demand Evaluation Assignment",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "istable": 1,
+ "editable_grid": 1
+}

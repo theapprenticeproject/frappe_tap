@@ -16,7 +16,9 @@
   "output_file_url",
   "status_column_break",
   "queued_at",
-  "completed_at"
+  "completed_at",
+  "assignments_section",
+  "assignments"
  ],
  "fields": [
   {
@@ -104,10 +106,22 @@
    "fieldname": "test_limit",
    "fieldtype": "Int",
    "label": "Test Limit"
+  },
+  {
+   "fieldname": "assignments_section",
+   "fieldtype": "Section Break",
+   "label": "Assignments"
+  },
+  {
+   "fieldname": "assignments",
+   "fieldtype": "Table",
+   "label": "Assignments",
+   "options": "On Demand Evaluation Assignment",
+   "read_only": 1
   }
  ],
  "links": [],
- "modified": "2026-11-02 12:00:00.000000",
+ "modified": "2026-11-26 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "On Demand Evaluation",

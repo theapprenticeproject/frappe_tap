@@ -61,7 +61,8 @@ def run_queue_evaluations(docname):
 		WHERE name IN %s""",
 		(docname, tuple(submissions)),
 	)
-	doc.db_set({"status": "Queued", "total_assignments": len(assignment_ids), "total_submissions": len(submissions), "queued_at": now_datetime()})
+	doc.update({"status": "Queued", "total_assignments": len(assignment_ids), "total_submissions": len(submissions), "queued_at": now_datetime()})
+	doc.save()
 	frappe.db.commit()
 
 	for i in range(0, len(submissions), 50):
@@ -76,7 +77,8 @@ def count_evaluations(docname):
 		"total_assignments": len(assignment_ids),
 		"total_submissions": len(_get_submissions(doc, assignment_ids)),
 	}
-	doc.db_set(counts)
+	doc.update(counts)
+	doc.save()
 	return counts
 
 
@@ -99,23 +101,26 @@ def _get_submissions(doc, assignment_ids):
 
 
 def _get_assignment_ids(doc):
+	"""Return the sheet's assignment IDs and list them in doc.assignments (unsaved)."""
 	verticals = [row.vertical for row in doc.verticals] or (
 		frappe.get_meta("On Demand Evaluation Vertical").get_field("vertical").options.split("\n")
 	)
 	spreadsheet_id = SHEETS_URL.rsplit("/", 1)[-1]
 	sheets = GoogleSheetsClient(get_google_service_account_info())
 	titles = sheets.get_tab_titles(spreadsheet_id)
-	titles = [title for title in titles if any(title.startswith(f"{vertical} ") for vertical in verticals)]
-	if not titles:
+	# Tabs are named "<vertical> <level>".
+	tabs = [(title, vertical) for title in titles for vertical in verticals if title.startswith(f"{vertical} ")]
+	if not tabs:
 		frappe.throw(f"No sheet tabs found for verticals {verticals}.")
 
-	ranges = ["'{}'".format(title.replace("'", "''")) for title in titles]
+	ranges = ["'{}'".format(title.replace("'", "''")) for title, _ in tabs]
 	data = sheets.get_batch_values(spreadsheet_id, ranges)
 
 	unit_activity_no = _normalize(doc.unit_activity_no)
 	program = _normalize(doc.program)
 	assignment_ids = []
-	for value_range in data:
+	doc.set("assignments", [])
+	for (title, vertical), value_range in zip(tabs, data):
 		header, *rows = value_range.get("values") or [[]]
 		unit_col = header.index("Unit & Activity No.")
 		program_col = header.index("Program")
@@ -123,7 +128,20 @@ def _get_assignment_ids(doc):
 		for row in rows:
 			row = row + [""] * (len(header) - len(row))
 			if _normalize(row[unit_col]) == unit_activity_no and _normalize(row[program_col]) == program:
-				assignment_ids.extend(a.strip() for a in row[assignment_col].split(",") if a.strip())
+				for assignment in (a.strip() for a in row[assignment_col].split(",") if a.strip()):
+					assignment_ids.append(assignment)
+					doc.append("assignments", {
+						"assignment_name": assignment,
+						"level": title[len(vertical) + 1 :],
+						"vertical": vertical,
+						"program": row[program_col],
+					})
+
+	# Leave the Assignment link blank for IDs missing in Frappe so they stand out.
+	existing = set(frappe.get_all("Assignment", filters={"name": ["in", assignment_ids]}, pluck="name"))
+	for row in doc.assignments:
+		if row.assignment_name in existing:
+			row.assignment = row.assignment_name
 	return assignment_ids
 
 

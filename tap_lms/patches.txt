@@ -28,3 +28,5 @@ tap_lms.patches.v0_4.delete_student_quiz_attempt_and_stage_progress
 tap_lms.patches.v0_4.delete_student_quiz_answer_and_onboarding_progress
 # tap_lms.patches.v0_4.rename_video_class_and_quiz
 tap_lms.patches.v0_4.backfill_submission_assignment_link
+tap_lms.patches.v0_4.create_student_sheet_registration_sources
+tap_lms.patches.v0_4.set_batch_glific_collections
