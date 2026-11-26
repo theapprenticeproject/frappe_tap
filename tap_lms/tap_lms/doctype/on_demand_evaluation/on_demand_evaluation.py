@@ -92,6 +92,7 @@ def _get_submissions(doc, assignment_ids):
 		"""
 		SELECT s.name FROM `tabSubmission` s
 		WHERE s.assign_id IN %(assignment_ids)s
+		  AND IFNULL(s.submission_type, '') NOT IN ('text', 'emoji')
 		  AND (IFNULL(s.submission_text, '') != '' OR IFNULL(s.submission_url, '') != '')
 		  AND EXISTS (
 			SELECT 1 FROM `tabStudent Enrollment` e
@@ -233,21 +234,33 @@ def check_queued_evaluations():
 
 	for name in frappe.get_all("On Demand Evaluation", filters={"status": "Queued"}, pluck="name"):
 		if not frappe.db.exists("Submission", {"rubric_eval_job": name, "rubric_eval_status": "Processing"}):
-			doc = frappe.get_doc("On Demand Evaluation", name)
-			completed_at = now_datetime()
-			file_name = _build_output_file_name(doc.program, doc.unit_activity_no, completed_at)
-			url = upload_bytes_to_google_drive(
-				_build_xlsx(name),
-				file_name,
-				ON_DEMAND_EVALUATION_DRIVE_FOLDER_ID,
-				XLSX_CONTENT_TYPE,
+			# The cron runs on the default queue (300s timeout); building the output can take longer.
+			frappe.enqueue(
+				"tap_lms.tap_lms.doctype.on_demand_evaluation.on_demand_evaluation.complete_evaluation",
+				queue="long",
+				timeout=3600,
+				job_id=f"complete_on_demand_evaluation::{name}",
+				deduplicate=True,
+				docname=name,
 			)
-			frappe.db.set_value("On Demand Evaluation", name, {
-				"status": "Completed",
-				"completed_at": completed_at,
-				"output_file_url": url,
-			})
-			frappe.db.commit()
+
+
+def complete_evaluation(docname):
+	doc = frappe.get_doc("On Demand Evaluation", docname)
+	completed_at = now_datetime()
+	file_name = _build_output_file_name(doc.program, doc.unit_activity_no, completed_at)
+	url = upload_bytes_to_google_drive(
+		_build_xlsx(docname),
+		file_name,
+		ON_DEMAND_EVALUATION_DRIVE_FOLDER_ID,
+		XLSX_CONTENT_TYPE,
+	)
+	frappe.db.set_value("On Demand Evaluation", docname, {
+		"status": "Completed",
+		"completed_at": completed_at,
+		"output_file_url": url,
+	})
+	frappe.db.commit()
 
 
 def _build_output_file_name(program, unit_activity_no, timestamp):
