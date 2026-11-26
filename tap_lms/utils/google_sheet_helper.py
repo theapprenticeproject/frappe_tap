@@ -49,14 +49,15 @@ class GoogleSheetsClient:
         )
         return self._get_json(f"{SHEETS_API_BASE}/{spreadsheet_id}", {"fields": fields})
 
-    def get_tab_titles(self, spreadsheet_id: str) -> list[str]:
+    def get_tab_titles(self, spreadsheet_id: str, skip_hidden: bool = False) -> list[str]:
         metadata = self._get_json(
             f"{SHEETS_API_BASE}/{spreadsheet_id}",
-            {"fields": "sheets.properties.title"},
+            {"fields": "sheets.properties(title,hidden)"},
         )
         return [
             sheet["properties"]["title"]
             for sheet in metadata.get("sheets") or []
+            if not (skip_hidden and sheet["properties"].get("hidden"))
         ]
 
     def get_batch_values(

@@ -164,7 +164,7 @@ def fill_rubrics(docname):
 		errors = []
 		try:
 			spreadsheet_id = parse_sheet_ref(sheet.sheet_url).spreadsheet_id
-			titles = sheets.get_tab_titles(spreadsheet_id)
+			titles = sheets.get_tab_titles(spreadsheet_id, skip_hidden=True)
 			for row in doc.assignments:
 				if row.vertical != sheet.vertical or not row.assignment:
 					continue
