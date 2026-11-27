@@ -25,7 +25,7 @@ from tap_lms.utils.scheduled_jobs import get_job_config
 # Built by scripts/private/list_prod_learning_unit_names_to_google_sheet.py:
 # one tab per "<vertical> <level>".
 SHEETS_URL = "https://sheets.googleapis.com/v4/spreadsheets/1nSN72ikEqM7U0gMl-3AoOV8KeHAzNZvK_zHCNcT6B34"
-ON_DEMAND_EVALUATION_DRIVE_FOLDER_ID = "13Rk38NrjFonIQ3BmpOrIC-rNItbo1wQU"
+ON_DEMAND_EVALUATION_DRIVE_FOLDER_ID = "1ofBHmDSzeqImZpn9F5cHGJR3efDTqc5B"
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 ILLEGAL_XLSX_CHARACTERS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 RUBRIC_GRADES = {"Invalid": -1, "Novice": 1, "Beginner": 2, "Emerging": 3, "Proficient": 4, "Expert": 5}
@@ -239,8 +239,6 @@ def check_queued_evaluations():
 				"tap_lms.tap_lms.doctype.on_demand_evaluation.on_demand_evaluation.complete_evaluation",
 				queue="long",
 				timeout=3600,
-				job_id=f"complete_on_demand_evaluation::{name}",
-				deduplicate=True,
 				docname=name,
 			)
 

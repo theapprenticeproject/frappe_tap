@@ -476,9 +476,11 @@ def process_submission_async(submission_id, raw_submission=None, submission_url=
 
 
 def _build_payload(submission_doc, eval_type):
+    vertical = frappe.db.get_value("Assignment", submission_doc.assign_id, "vertical")
     payload = {
         "submission_id": submission_doc.name,
         "assign_id": submission_doc.assign_id,
+        "course_name": vertical and frappe.db.get_value("Course Verticals", vertical, "name1"),
         **_get_student_payload_details(submission_doc.student_id),
         "submission_type": submission_doc.submission_type,
         "submission_text": submission_doc.submission_text,
