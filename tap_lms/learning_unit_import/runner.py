@@ -227,6 +227,7 @@ class SourceRecorder:
             "source": self.source,
             "sheet_name": activity.sheet_name,
             "row_number": activity.row_number,
+            "vertical": activity.master.vertical,
             "course": activity.master.course,
             "level": activity.master.level,
             "unit_activity": activity.unit_activity,

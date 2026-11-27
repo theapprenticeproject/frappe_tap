@@ -83,12 +83,14 @@ def upload_bytes_to_google_drive(
     file_name: str,
     parent_folder_id: str,
     content_type: str,
+    drive_mime_type: str | None = None,
 ) -> str:
+    """Pass drive_mime_type (e.g. a Google Sheet type) to have Drive convert the upload."""
     session = _get_drive_session(GOOGLE_DRIVE_READWRITE_SCOPES)
     boundary = f"codex_{uuid4().hex}"
     metadata = json.dumps({
         "name": file_name,
-        "mimeType": content_type,
+        "mimeType": drive_mime_type or content_type,
         "parents": [parent_folder_id],
     }).encode("utf-8")
     body = b"\r\n".join([

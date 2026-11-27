@@ -12,6 +12,7 @@
   "activity_name",
   "week_no",
   "sheet_name",
+  "vertical",
   "course",
   "level",
   "column_break_links",
@@ -67,6 +68,11 @@
    "fieldname": "sheet_name",
    "fieldtype": "Data",
    "label": "Sheet Tab"
+  },
+  {
+   "fieldname": "vertical",
+   "fieldtype": "Data",
+   "label": "Vertical"
   },
   {
    "fieldname": "course",
@@ -125,7 +131,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-10-14 12:00:00.000000",
+ "modified": "2026-11-27 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Tap Lms",
  "name": "Learning Unit Import Run Result",

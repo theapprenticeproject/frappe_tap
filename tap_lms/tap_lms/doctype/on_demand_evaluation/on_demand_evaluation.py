@@ -252,6 +252,7 @@ def complete_evaluation(docname):
 		file_name,
 		ON_DEMAND_EVALUATION_DRIVE_FOLDER_ID,
 		XLSX_CONTENT_TYPE,
+		drive_mime_type="application/vnd.google-apps.spreadsheet",
 	)
 	frappe.db.set_value("On Demand Evaluation", docname, {
 		"status": "Completed",
@@ -265,7 +266,7 @@ def _build_output_file_name(program, unit_activity_no, timestamp):
 	def clean(value):
 		return re.sub(r"[/\x00-\x1f]+", "_", str(value or "").strip()).strip(" _")
 
-	return f"{clean(program)}_{clean(unit_activity_no)}_{timestamp.strftime('%Y%m%d_%H%M%S')}.xlsx"
+	return f"{clean(program)}_{clean(unit_activity_no)}_{timestamp.strftime('%Y%m%d_%H%M%S')}"
 
 
 def _build_xlsx(job_name):
